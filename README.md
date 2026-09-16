@@ -1,5 +1,8 @@
 # tsession
 
+<img src="1.png" width="100%" />
+<img src="2.png" width="100%" />
+
 A lightweight tmux session manager: prompt-based session switching/creation,
 a session picker, and snapshot save/restore (windows, order, names, layouts,
 working directories, running commands).
@@ -22,12 +25,12 @@ working directories, running commands).
 
 All bindings live on the tmux prefix table:
 
-| Keys              | Action                                                |
-| ----------------- | ----------------------------------------------------- |
-| `Prefix + T`      | Prompt for a session name → switch to it or create it |
-| `Prefix + S`      | Menu of **saved** sessions (restore-or-switch)        |
+| Keys              | Action                                                   |
+| ----------------- | -------------------------------------------------------- |
+| `Prefix + T`      | Prompt for a session name → switch to it or create it    |
+| `Prefix + S`      | Menu of **saved** sessions (restore-or-switch)           |
 | `Prefix + Ctrl-s` | Save the **current** session (merged into the save file) |
-| `Prefix + Ctrl-r` | Restore all sessions from the save file               |
+| `Prefix + Ctrl-r` | Restore all sessions from the save file                  |
 
 ## Requirements
 
