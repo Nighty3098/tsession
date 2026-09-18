@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
 
 NAME_RAW="${1:-}"
 NAME="$(echo "$NAME_RAW" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -32,7 +33,7 @@ switch_to() {
 
 if tmux has-session -t "=$NAME" 2>/dev/null; then
   switch_to "$NAME"
-  tmux display-message "tsession: → $NAME" 2>/dev/null || true
+  tmux display-message "$TS_TAG → $NAME" 2>/dev/null || true
   exit 0
 fi
 

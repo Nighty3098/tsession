@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
+
 US=$'\x1f'
 
 get_save_path() {
@@ -30,7 +33,7 @@ RESTORE_CMDS="$(tmux show-option -gqv "@tsession-restore-cmds" 2>/dev/null || tr
 RESTORE_HIST="$(tmux show-option -gqv "@tsession-restore-history" 2>/dev/null || true)"
 [ -z "$RESTORE_HIST" ] && RESTORE_HIST="on"
 if [ ! -f "$SAVE_PATH" ]; then
-  tmux display-message "tsession: save file not found: $SAVE_PATH" 2>/dev/null || echo "tsession: save file not found: $SAVE_PATH"
+  tmux display-message "$TS_TAG save file not found: $SAVE_PATH" 2>/dev/null || echo "tsession: save file not found: $SAVE_PATH"
   exit 1
 fi
 
@@ -126,7 +129,7 @@ if [ -n "$ONLY" ]; then
     if [ "$s" = "$ONLY" ]; then found=1; break; fi
   done
   if [ "$found" -eq 0 ]; then
-    tmux display-message "tsession: session not in save file: $ONLY" 2>/dev/null \
+    tmux display-message "$TS_TAG session not in save file: $ONLY" 2>/dev/null \
       || echo "tsession: session not in save file: $ONLY"
     exit 1
   fi
@@ -311,5 +314,5 @@ if [ -n "$attached_session" ]; then
   fi
 fi
 
-tmux display-message "tsession: restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history)" 2>/dev/null \
+tmux display-message "$TS_TAG restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history)" 2>/dev/null \
   || echo "tsession: restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history)"

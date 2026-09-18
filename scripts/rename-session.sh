@@ -6,6 +6,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
+
 US=$'\x1f'
 
 OLD_RAW="${1:-}"
@@ -32,7 +35,7 @@ get_save_path() {
 SAVE_PATH="$(get_save_path)"
 
 say() {
-  tmux display-message "tsession: $1" 2>/dev/null || echo "tsession: $1"
+  tmux display-message "$TS_TAG$1" 2>/dev/null || echo "tsession: $1"
 }
 
 if [ -z "$NEW" ]; then

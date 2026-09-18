@@ -4,12 +4,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
+
 NAME_RAW="${1:-}"
 NAME="$(echo "$NAME_RAW" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 [ -z "$NAME" ] && exit 0
 
 say() {
-  tmux display-message "tsession: $1" 2>/dev/null || echo "tsession: $1"
+  tmux display-message "$TS_TAG$1" 2>/dev/null || echo "tsession: $1"
 }
 
 if ! tmux has-session -t "=$NAME" 2>/dev/null; then

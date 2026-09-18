@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
+
 US=$'\x1f'
 
 NAME_RAW="${1:-}"
@@ -23,7 +26,7 @@ get_save_path() {
 
 SAVE_PATH="${2:-$(get_save_path)}"
 if [ ! -f "$SAVE_PATH" ]; then
-  tmux display-message "tsession: save file not found" 2>/dev/null || echo "tsession: save file not found"
+  tmux display-message "$TS_TAG save file not found" 2>/dev/null || echo "tsession: save file not found"
   exit 1
 fi
 
@@ -38,8 +41,8 @@ removed="$(awk -v US="$US" -v name="$NAME" '
 mv -f "$TMP" "$SAVE_PATH"
 
 if [ "${removed:-0}" -eq 0 ]; then
-  tmux display-message "tsession: not in save file: $NAME" 2>/dev/null || echo "tsession: not in save file: $NAME"
+  tmux display-message "$TS_TAG not in save file: $NAME" 2>/dev/null || echo "tsession: not in save file: $NAME"
   exit 1
 fi
-tmux display-message "tsession: deleted save of '$NAME' (${removed} lines)" 2>/dev/null \
+tmux display-message "$TS_TAG deleted save of '$NAME' (${removed} lines)" 2>/dev/null \
   || echo "tsession: deleted save of '$NAME' (${removed} lines)"

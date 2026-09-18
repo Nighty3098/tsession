@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
 
 sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
@@ -14,13 +15,16 @@ CLONE_Q="$(sq "$SCRIPT_DIR/clone-session.sh")"
 PREVIEW_Q="$(sq "$SCRIPT_DIR/preview-saved.sh")"
 
 if [ -z "$("$SCRIPT_DIR/list-saved.sh")" ]; then
-  tmux display-message "tsession: no saved sessions — hit Prefix + Ctrl-s first" 2>/dev/null \
+  tmux display-message "$TS_TAG no saved sessions — hit Prefix + Ctrl-s first" 2>/dev/null \
     || echo "tsession: no saved sessions — hit Prefix + Ctrl-s first"
   exit 0
 fi
 
 FZF_ARGS=(
-  --delimiter=$'\t' --with-nth=1 --no-multi
+  --delimiter=$'\t' --with-nth=1 --no-multi --ansi
+  --highlight-line
+  --color "$TS_FZF_MAIN"
+  --color "$TS_FZF_INFO"
   --prompt='session> '
   --header=$'Enter: switch/restore   X: kill live   C: clone\nR: rename to query   D: delete saved   ?: preview   Esc: cancel'
   --bind "D:execute-silent($DEL_Q {2} >/dev/null 2>&1)+reload($LIST_Q)+clear-query"
@@ -33,6 +37,15 @@ FZF_ARGS=(
 PREVIEW_ON="$(tmux show-option -gqv "@tsession-fzf-preview" 2>/dev/null || echo on)"
 if [ "${PREVIEW_ON:-on}" != "off" ]; then
   FZF_ARGS+=(--preview "$PREVIEW_Q {2}" --preview-window='right:55%:wrap:border-left')
+fi
+# Borderless popup (@tsession-popup-border != 'on'): no tmux frame, so fake
+# the edge with an invisible surface-coloured fzf border + padding.
+# Both are painted (opaque) — unlike --margin, which stays transparent.
+BORDER_OPT="$(tmux show-option -gqv "@tsession-popup-border" 2>/dev/null || true)"
+if [ "${BORDER_OPT:-off}" != "on" ]; then
+  FZF_ARGS+=(--border=rounded --padding=0,1 --color "$TS_FZF_BORDER")
+else
+  FZF_ARGS+=(--border=none)
 fi
 [ -n "${TSESSION_FZF_FILTER:-}" ] && FZF_ARGS+=(--filter="$TSESSION_FZF_FILTER")
 

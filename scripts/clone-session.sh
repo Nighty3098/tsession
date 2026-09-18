@@ -9,6 +9,7 @@ set -euo pipefail
 US=$'\x1f'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
 
 SRC_RAW="${1:-}"
 SRC="$(echo "$SRC_RAW" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -33,7 +34,7 @@ get_save_path() {
 SAVE_PATH="$(get_save_path)"
 
 say() {
-  tmux display-message "tsession: $1" 2>/dev/null || echo "tsession: $1"
+  tmux display-message "$TS_TAG$1" 2>/dev/null || echo "tsession: $1"
 }
 
 [ -z "$SRC" ] && exit 0

@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
+
 US=$'\x1f'
 
 get_save_path() {
@@ -48,8 +51,8 @@ done < "$SAVE_PATH"
 for s in "${sessions[@]}"; do
   nw="${win_count[$s]:-0}"
   if tmux has-session -t "=$s" 2>/dev/null; then
-    printf '● %s (%sw)\t%s\n' "$s" "$nw" "$s"
+    printf '%s●%s %s (%sw)\t%s\n' "$TS_ANSI_ALIVE" "$TS_RESET" "$s" "$nw" "$s"
   else
-    printf '○ %s (%sw)\t%s\n' "$s" "$nw" "$s"
+    printf '%s○%s %s (%sw)\t%s\n' "$TS_ANSI_SAVED" "$TS_RESET" "$s" "$nw" "$s"
   fi
 done

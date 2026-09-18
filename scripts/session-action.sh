@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
 
 NAME_RAW="${1:-}"
 NAME="$(echo "$NAME_RAW" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -20,18 +21,18 @@ NAME_Q="$(sq "$NAME")"
 
 if tmux has-session -t "=$NAME" 2>/dev/null; then
   verb="Switch to"
-  state="● alive"
+  state="#[fg=$CURRENT,bold]● alive"
 else
   verb="Restore"
-  state="○ saved only"
+  state="#[fg=$TS_FG,dim]○ saved only"
 fi
 
 tmux display-menu \
-  -T "#[align=centre]$NAME ($state)" -x R -y P \
-  "$verb '$NAME'" "S" "run-shell \"$GOTO_Q $NAME_Q\"" \
-  "Kill live session" "X" "run-shell \"$KILL_Q $NAME_Q; $MENU_Q\"" \
+  -T "#[align=centre,$TS_TITLE_BLOCK] $NAME #[default]$state#[default]" -x R -y P \
+  "#[fg=$CURRENT,bold]$verb '$NAME'#[default]" "S" "run-shell \"$GOTO_Q $NAME_Q\"" \
+  "#[fg=$ACCENT,bold]Kill live session#[default]" "X" "run-shell \"$KILL_Q $NAME_Q; $MENU_Q\"" \
   "Clone as…" "C" "command-prompt -p 'Clone to:' \"run-shell \\\"$CLONE_Q $NAME_Q '%%'; $MENU_Q\\\"\"" \
   "Rename to…" "R" "command-prompt -p 'New name:' \"run-shell \\\"$RENAME_Q $NAME_Q '%%'; $MENU_Q\\\"\"" \
   "" "" "" \
-  "Delete saved session" "D" "run-shell \"$DEL_Q $NAME_Q && $MENU_Q\"" \
+  "#[fg=$ACCENT]Delete saved session#[default]" "D" "run-shell \"$DEL_Q $NAME_Q && $MENU_Q\"" \
   "Back to list" "B" "run-shell \"$MENU_Q\""

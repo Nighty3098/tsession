@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/theme.sh"
 US=$'\x1f'
 
 get_save_path() {
@@ -22,7 +23,7 @@ sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
 SAVE_PATH="$(get_save_path)"
 if [ ! -f "$SAVE_PATH" ]; then
-  tmux display-message "tsession: no save file yet — hit Prefix + Ctrl-s first" 2>/dev/null \
+  tmux display-message "$TS_TAG no save file yet — hit Prefix + Ctrl-s first" 2>/dev/null \
     || echo "tsession: no save file yet — hit Prefix + Ctrl-s first"
   exit 0
 fi
@@ -53,20 +54,20 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$SAVE_PATH"
 
 if [ "${#sessions[@]}" -eq 0 ]; then
-  tmux display-message "tsession: save file is empty" 2>/dev/null || echo "tsession: save file is empty"
+  tmux display-message "$TS_TAG save file is empty" 2>/dev/null || echo "tsession: save file is empty"
   exit 0
 fi
 
 ACTION_Q="$(sq "$SCRIPT_DIR/session-action.sh")"
-CMD=(tmux display-menu -T "#[align=centre]Saved sessions (Enter = actions)" -x R -y P)
+CMD=(tmux display-menu -T "#[align=centre,$TS_TITLE_BLOCK] Saved sessions #[default] (Enter = actions)" -x R -y P)
 KEYS="0123456789abcdefghijklmnopqrstuvwxyz"
 ki=0
 for s in "${sessions[@]}"; do
   nw="${win_count[$s]:-0}"
   if tmux has-session -t "=$s" 2>/dev/null; then
-    label="● $s (${nw}w)"
+    label="#[fg=$CURRENT,bold]●#[default] $s (${nw}w)"
   else
-    label="○ $s (${nw}w)"
+    label="#[fg=$TS_FG,dim]○#[default] $s (${nw}w)"
   fi
   if [ "$ki" -lt "${#KEYS}" ]; then
     key="${KEYS:$ki:1}"
@@ -82,9 +83,9 @@ RESTORE_Q="$(sq "$SCRIPT_DIR/restore.sh")"
 HANDLER_Q="$(sq "$SCRIPT_DIR/session-handler.sh")"
 CMD+=(
   "" "" ""
-  "Save all" "S" "run-shell \"$SAVE_Q\""
-  "Restore all" "R" "run-shell \"$RESTORE_Q\""
-  "New session…" "N" "command-prompt -p Session: -I '#S' \"run-shell \\\"$HANDLER_Q '%%'\\\"\""
+  "#[bg=$ACCENT,fg=$ACCENT_FG,bold] Save all #[default]" "S" "run-shell \"$SAVE_Q\""
+  "#[bg=$CURRENT,fg=$CURRENT_FG,bold] Restore all #[default]" "R" "run-shell \"$RESTORE_Q\""
+  "#[bg=$MATCH,fg=$MATCH_FG,bold] New session… #[default]" "N" "command-prompt -p Session: -I '#S' \"run-shell \\\"$HANDLER_Q '%%'\\\"\""
 )
 
 "${CMD[@]}"
