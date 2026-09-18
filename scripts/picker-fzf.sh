@@ -49,7 +49,19 @@ else
 fi
 [ -n "${TSESSION_FZF_FILTER:-}" ] && FZF_ARGS+=(--filter="$TSESSION_FZF_FILTER")
 
-sel="$("$SCRIPT_DIR/list-saved.sh" | fzf "${FZF_ARGS[@]}")" || sel=""
+# fzf wraps every frame in DEC2026 sync markers; tmux before 3.8 tears
+# such frames inside popup overlays (slices of panes underneath flash
+# through). Strip the markers via a pty relay (default on;
+# set -g @tsession-fzf-nosync 'off' for bare fzf).
+NOSYNC_OPT="$(tmux show-option -gqv "@tsession-fzf-nosync" 2>/dev/null || true)"
+FZF_BIN=(fzf)
+if [ "${NOSYNC_OPT:-on}" != "off" ] \
+    && command -v python3 >/dev/null 2>&1 \
+    && [ -x "$SCRIPT_DIR/fzf-nosync.py" ]; then
+  FZF_BIN=("$SCRIPT_DIR/fzf-nosync.py" fzf)
+fi
+
+sel="$("$SCRIPT_DIR/list-saved.sh" | "${FZF_BIN[@]}" "${FZF_ARGS[@]}")" || sel=""
 [ -z "$sel" ] && exit 0
 
 name="${sel##*$'\t'}"
