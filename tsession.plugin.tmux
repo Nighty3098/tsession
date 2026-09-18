@@ -14,7 +14,7 @@ get_opt() {
 }
 
 PROMPT_KEY="$(get_opt "@tsession-key" "T")"
-MENU_KEY="$(get_opt "@tsession-menu-key" "S")"
+MENU_KEY="$(get_opt "@tsession-menu-key" "C-g")"
 SAVE_KEY="$(get_opt "@tsession-save-key" "C-s")"
 RESTORE_KEY="$(get_opt "@tsession-restore-key" "C-r")"
 
