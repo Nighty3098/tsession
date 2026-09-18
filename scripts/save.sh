@@ -43,6 +43,11 @@ fi
 mkdir -p "$(dirname "$SAVE_PATH")"
 TMP="$SAVE_PATH.tmp.$$"
 
+# Scrollback depth per pane (0 = off). Opt-in via:
+#   set -g @tsession-history-lines '100'
+HISTORY_LINES="$(tmux show-option -gqv "@tsession-history-lines" 2>/dev/null || true)"
+case "${HISTORY_LINES:-}" in ''|*[!0-9]*) HISTORY_LINES=0 ;; esac
+
 b64() { printf '%s' "$1" | base64 -w0 2>/dev/null || printf '%s' "$1" | base64 | tr -d '\n'; }
 
 full_cmd_of_pane() {
@@ -92,6 +97,16 @@ dump_block() {
     [ -z "${sess:-}" ] && continue
     cmd="$(full_cmd_of_pane "$pid")"
     printf 'P%s%s%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$pactive" "$US" "$(b64 "$cwd")" "$US" "$(b64 "$cmd")"
+    if [ "$HISTORY_LINES" -gt 0 ]; then
+      hist="$(tmux capture-pane -p -J -S "-$HISTORY_LINES" -t "=$sess:$widx.$pidx" 2>/dev/null || true)"
+      if [ -n "$hist" ]; then
+        # Guard against pathological panes (huge scrollback dumps).
+        if [ "${#hist}" -gt 102400 ]; then
+          hist="$(printf '%s' "$hist" | tail -c 102400 || true)"
+        fi
+        printf 'H%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$(b64 "$hist")"
+      fi
+    fi
   done <<< "$pane_src"
 }
 
@@ -104,7 +119,10 @@ if [ -z "$ONLY" ]; then
   count_s="$(grep -c "^S$US" "$SAVE_PATH" || true)"
   count_w="$(grep -c "^W$US" "$SAVE_PATH" || true)"
   count_p="$(grep -c "^P$US" "$SAVE_PATH" || true)"
-  say "saved ${count_s} sessions, ${count_w} windows, ${count_p} panes → $SAVE_PATH"
+  count_h="$(grep -c "^H$US" "$SAVE_PATH" || true)"
+  msg="saved ${count_s} sessions, ${count_w} windows, ${count_p} panes → $SAVE_PATH"
+  [ "$count_h" -gt 0 ] && msg="$msg (+${count_h} history)"
+  say "$msg"
 else
   {
     echo "# tsession save v1 $(date -u +%Y-%m-%dT%H:%M:%SZ)"

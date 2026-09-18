@@ -19,6 +19,16 @@ get_save_path() {
 
 SAVE_PATH="${1:-$(get_save_path)}"
 ONLY="${2:-}"
+
+# Re-running saved commands: 'on' (default) or 'off' (restore shells only).
+#   set -g @tsession-restore-cmds 'off'
+RESTORE_CMDS="$(tmux show-option -gqv "@tsession-restore-cmds" 2>/dev/null || true)"
+[ -z "$RESTORE_CMDS" ] && RESTORE_CMDS="on"
+
+# Re-printing captured scrollback (H lines): 'on' (default) or 'off'.
+#   set -g @tsession-restore-history 'off'
+RESTORE_HIST="$(tmux show-option -gqv "@tsession-restore-history" 2>/dev/null || true)"
+[ -z "$RESTORE_HIST" ] && RESTORE_HIST="on"
 if [ ! -f "$SAVE_PATH" ]; then
   tmux display-message "tsession: save file not found: $SAVE_PATH" 2>/dev/null || echo "tsession: save file not found: $SAVE_PATH"
   exit 1
@@ -36,6 +46,48 @@ is_shell_basename() {
   esac
 }
 
+# Collapse a saved command to one safe line: ps output may contain
+# newlines/CRs, and send-keys -l would execute each line separately.
+sanitize_cmd() {
+  printf '%s' "$1" | tr '\n\r' '  ' | tr "$US" ' ' \
+    | sed 's/[[:space:]][[:space:]]*/ /g;s/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# True if the program of a saved command line exists on this machine.
+cmd_available() {
+  local first="${1%% *}" base
+  [ -z "$first" ] && return 1
+  if [[ "$first" == */* ]]; then
+    [ -x "$first" ] && return 0 || return 1
+  fi
+  base="$(basename "$first")"
+  command -v "$base" >/dev/null 2>&1
+}
+
+# True if the exact pane target exists (has-session is session-level and
+# can't be trusted with window.pane targets across tmux versions).
+pane_exists() {
+  tmux display-message -p -t "$1" '#{pane_id}' >/dev/null 2>&1
+}
+
+# Live pane indexes of a window, one per line, in creation order.
+live_panes_of() {
+  tmux list-panes -t "=$1:$2" -F '#{pane_index}' 2>/dev/null || true
+}
+
+# Wait until the pane runs an interactive shell (fresh panes need a moment).
+wait_for_shell() {
+  local target="$1" i cmd
+  for i in $(seq 1 30); do
+    cmd="$(tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)"
+    case "$cmd" in
+      sh|bash|dash|zsh|fish|ksh|tcsh|csh|"") return 0 ;;
+    esac
+    sleep 0.1
+  done
+  return 1
+}
+
 sessions_ordered=()
 attached_session=""
 declare -A seen_session
@@ -43,7 +95,8 @@ declare -A seen_session
 TMPDIR_WORK="$(mktemp -d)"
 WINLIST="$TMPDIR_WORK/win"
 PANELIST="$TMPDIR_WORK/pane"
-: > "$WINLIST"; : > "$PANELIST"
+HISTLIST="$TMPDIR_WORK/hist"
+: > "$WINLIST"; : > "$PANELIST"; : > "$HISTLIST"
 
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
@@ -61,6 +114,7 @@ while IFS= read -r line || [ -n "$line" ]; do
       ;;
     W"$US"*) printf '%s\n' "$line" >> "$WINLIST" ;;
     P"$US"*) printf '%s\n' "$line" >> "$PANELIST" ;;
+    H"$US"*) printf '%s\n' "$line" >> "$HISTLIST" ;;
   esac
 done < "$SAVE_PATH"
 
@@ -88,6 +142,8 @@ done
 
 wins_of() { grep "^W$US$1$US" "$WINLIST" || true; }
 panes_of() { grep "^P$US$1$US$2$US" "$PANELIST" || true; }
+
+TOTAL_CMDS_RUN=0; TOTAL_CMDS_SKIPPED=0; TOTAL_HIST=0
 
 for s in "${sessions_ordered[@]}"; do
   first_win=1
@@ -150,23 +206,83 @@ for s in "${sessions_ordered[@]}"; do
     fi
   done < <(wins_of "$s")
 
-  while IFS= read -r pline || [ -n "${pline:-}" ]; do
-    [ -z "${pline:-}" ] && continue
-    IFS="$US" read -r _ ps pw pidx pactive cwd_b64 cmd_b64 <<< "$pline"
-    pcwd="$(b64d "$cwd_b64")"
-    pcmd="$(b64d "$cmd_b64")"
-    target="=$ps:$pw.$pidx"
-    tmux has-session -t "$target" 2>/dev/null || continue
-    if [ -n "$pcmd" ]; then
+  # Re-print captured scrollback (approximation: the text is catted into the
+  # fresh pane so it is visible again; exact scrollback state can't be set
+  # via tmux API). Files live in a persistent cache dir — NOT in TMPDIR_WORK —
+  # because the shell executes `cat` asynchronously after send-keys returns.
+  # Saved panes are paired with live panes by ORDER within the window, so
+  # replay also works when pane-base-index differs from the save-time server.
+  hist_replayed=0
+  if [ "$RESTORE_HIST" = "on" ]; then
+    HISTCACHE="$HOME/.cache/tsession/pane-history"
+    mkdir -p "$HISTCACHE" 2>/dev/null || true
+    while IFS= read -r wline || [ -n "${wline:-}" ]; do
+      [ -z "${wline:-}" ] && continue
+      IFS="$US" read -r _ _hs hwidx _wn _wa _wl <<< "$wline"
+      mapfile -t saved_h < <(grep "^H$US$s$US$hwidx$US" "$HISTLIST" || true)
+      [ "${#saved_h[@]}" -eq 0 ] && continue
+      mapfile -t live_hp < <(live_panes_of "$s" "$hwidx")
+      hi=0
+      for hline in "${saved_h[@]}"; do
+        [ -z "${hline:-}" ] && { hi=$((hi + 1)); continue; }
+        IFS="$US" read -r _ hs hw hp hcontent <<< "$hline"
+        htext="$(b64d "$hcontent")"
+        hi=$((hi + 1))
+        [ -z "$htext" ] && continue
+        lp="${live_hp[$((hi - 1))]:-}"
+        [ -z "$lp" ] && continue
+        safe_s="$(printf '%s' "$hs" | tr -c 'A-Za-z0-9_-' '_')"
+        hfile="$HISTCACHE/${safe_s}_${hw}_${hp}.txt"
+        printf '%s\n' "$htext" > "$hfile" 2>/dev/null || continue
+        target="=$hs:$hw.$lp"
+        pane_exists "$target" || continue
+        wait_for_shell "$target" || true
+        tmux send-keys -t "$target" -l "cat '$hfile'" 2>/dev/null || continue
+        tmux send-keys -t "$target" Enter 2>/dev/null || continue
+        hist_replayed=$((hist_replayed + 1))
+      done
+    done < <(wins_of "$s")
+  fi
+
+  # Saved panes are paired with live panes by ORDER within the window (see above).
+  cmds_run=0; cmds_skipped=0
+  while IFS= read -r wline || [ -n "${wline:-}" ]; do
+    [ -z "${wline:-}" ] && continue
+    IFS="$US" read -r _ _cs cwidx _cwn _cwa _cwl <<< "$wline"
+    mapfile -t saved_p < <(panes_of "$s" "$cwidx")
+    [ "${#saved_p[@]}" -eq 0 ] && continue
+    mapfile -t live_cp < <(live_panes_of "$s" "$cwidx")
+    pi=0
+    for pline in "${saved_p[@]}"; do
+      [ -z "${pline:-}" ] && { pi=$((pi + 1)); continue; }
+      IFS="$US" read -r _ ps pw pidx pactive cwd_b64 cmd_b64 <<< "$pline"
+      pcwd="$(b64d "$cwd_b64")"
+      pcmd="$(b64d "$cmd_b64")"
+      lp="${live_cp[$pi]:-}"
+      pi=$((pi + 1))
+      [ -z "$pcmd" ] && continue
+      [ -z "$lp" ] && { cmds_skipped=$((cmds_skipped + 1)); continue; }
+      [ "$RESTORE_CMDS" = "on" ] || { cmds_skipped=$((cmds_skipped + 1)); continue; }
+      pcmd="$(sanitize_cmd "$pcmd")"
+      [ -z "$pcmd" ] && continue
+      target="=$ps:$pw.$lp"
+      pane_exists "$target" || { cmds_skipped=$((cmds_skipped + 1)); continue; }
       base="$(echo "$pcmd" | awk '{print $1}')"
       base="$(basename "$base" 2>/dev/null || echo "$base")"
-      if ! is_shell_basename "$base"; then
-        sleep 0.2
-        tmux send-keys -t "$target" -l "$pcmd" 2>/dev/null || true
-        tmux send-keys -t "$target" Enter 2>/dev/null || true
+      is_shell_basename "$base" && continue
+      if ! cmd_available "$pcmd"; then
+        cmds_skipped=$((cmds_skipped + 1))
+        continue
       fi
-    fi
-  done < <(grep "^P$US$s$US" "$PANELIST" || true)
+      wait_for_shell "$target" || true
+      tmux send-keys -t "$target" -l "$pcmd" 2>/dev/null || continue
+      tmux send-keys -t "$target" Enter 2>/dev/null || continue
+      cmds_run=$((cmds_run + 1))
+    done
+  done < <(wins_of "$s")
+  TOTAL_CMDS_RUN=$((TOTAL_CMDS_RUN + cmds_run))
+  TOTAL_CMDS_SKIPPED=$((TOTAL_CMDS_SKIPPED + cmds_skipped))
+  TOTAL_HIST=$((TOTAL_HIST + hist_replayed))
 
   while IFS= read -r wline || [ -n "${wline:-}" ]; do
     [ -z "${wline:-}" ] && continue
@@ -195,5 +311,5 @@ if [ -n "$attached_session" ]; then
   fi
 fi
 
-tmux display-message "tsession: restored ${#sessions_ordered[@]} sessions from $SAVE_PATH" 2>/dev/null \
-  || echo "tsession: restored ${#sessions_ordered[@]} sessions from $SAVE_PATH"
+tmux display-message "tsession: restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history)" 2>/dev/null \
+  || echo "tsession: restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history)"
