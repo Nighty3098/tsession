@@ -1,7 +1,15 @@
-# '💻 tsession'
+<div align="center">
+
+# `💻 tsession`
+
+<br /><br />
 
 <img src="https://github.com/user-attachments/assets/4e16e631-6eef-4fbd-9da0-c8350886cc44" width="100%" />
 <img src="https://github.com/user-attachments/assets/7311c841-6815-4e87-8a3a-a24a14f294a0" width="100%" />
+
+<br /><br />
+
+</div>
 
 A lightweight tmux session manager: prompt-based session switching/creation,
 an interactive saved-session picker, and snapshot save/restore (window order,
