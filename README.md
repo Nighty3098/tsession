@@ -27,7 +27,8 @@ names, layouts, working directories, running commands).
   running commands into a single file, then rebuild everything after a reboot
   or `kill-server` — all at once or one session. Optional scrollback capture.
 - **Zero dependencies** beyond tmux plus standard `base64` and `ps`.
-  No Python; fzf optional.
+  Python 3 is used for the picker's tear-free fzf relay (falls back to bare
+  fzf without it); fzf itself optional.
 
 ## Key bindings (prefix table)
 
@@ -73,14 +74,33 @@ run-shell /path/to/tsession/tsession.plugin.tmux
 | `@tsession-restore-cmds`    | `on`                    | `off` = restore shells only, never re-run saved commands                                   |
 | `@tsession-restore-history` | `on`                    | `off` = skip re-printing captured scrollback on restore                                    |
 | `@tsession-fzf-preview`     | `on`                    | `off` = disable the windows/panes preview in the fzf picker                                |
+| `@tsession-fzf-nosync`      | `on`                    | `off` = run bare fzf (DEC2026 sync frames tear popups on tmux < 3.8)                       |
+| `@tsession-popup-border`     | `off`                   | `on` = framed popup with title; `off` = borderless panel, colour only in backgrounds      |
 
 Options must be set **before** the `run`/`run-shell` line.
+
+## Theme
+
+No hardcoded colours: the UI follows the running tmux theme, so it matches
+any palette automatically —
+
+| UI role                | Source tmux option              |
+| ---------------------- | ------------------------------- |
+| Accent (titles, tags)  | `pane-active-border-style` fg   |
+| Live highlight         | `window-status-current-style`   |
+| Match highlight        | `copy-mode-match-style`         |
+| Base text / surface    | `status-style` fg / bg          |
+
+Truecolour needs a `Tc` override for your terminal, e.g.
+`set -ag terminal-overrides ",xterm-kitty:Tc"`. On tmux < 3.8 the picker
+strips fzf's DEC2026 sync frames (see `@tsession-fzf-nosync`) to avoid
+torn popup frames.
 
 ## Usage
 
 - **Switch or create:** `Prefix + T`, type a name, Enter. Empty cancels; `.`
   and `:` become `_` (tmux forbids them in names).
-- **Saved-session menu:** `Prefix + Ctrl-g`. Requires tmux ≥ 3.2. Without fzf
+- **Saved-session menu:** `Prefix + Ctrl-g`. Requires tmux ≥ 3.3. Without fzf
   it falls back to a static `display-menu` with per-session actions. If no
   save file yet, it tells you to press `Prefix + Ctrl-s` first.
 - **Save:** `Prefix + Ctrl-s` snapshots the current session only (idempotent
@@ -102,6 +122,8 @@ set -g @tsession-restore-key   'C-r'     # restore all
 set -g @tsession-save-path     '~/.local/share/tsession/sessions.save'
 set -g @tsession-kill-existing 'on'
 set -g @tsession-history-lines '100'
+set -g @tsession-popup-border   'off'   # 'on' = framed popup with title
+set -g @tsession-fzf-nosync     'on'    # 'off' = bare fzf in the picker
 
 run '~/.tmux/plugins/tpm/tpm'
 ```
