@@ -22,7 +22,7 @@ fi
 FZF_ARGS=(
   --delimiter=$'\t' --with-nth=1 --no-multi
   --prompt='session> '
-  --header='Enter: switch/restore   X: kill live   C: clone   R: rename to query   D: delete saved   ?: preview'
+  --header=$'Enter: switch/restore   X: kill live   C: clone\nR: rename to query   D: delete saved   ?: preview   Esc: cancel'
   --bind "D:execute-silent($DEL_Q {2} >/dev/null 2>&1)+reload($LIST_Q)+clear-query"
   --bind "X:execute-silent($KILL_Q {2} >/dev/null 2>&1)+reload($LIST_Q)"
   --bind "C:execute-silent($CLONE_Q {2} {q} >/dev/null 2>&1)+reload($LIST_Q)+clear-query"
