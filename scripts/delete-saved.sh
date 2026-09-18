@@ -33,7 +33,7 @@ fi
 TMP="$SAVE_PATH.tmp.$$"
 removed="$(awk -v US="$US" -v name="$NAME" '
   BEGIN { FS = US; OFS = US; del = 0 }
-  /^(S|W|P)/ && $2 == name { del++; next }
+  /^(S|W|P|H|E)/ && $2 == name { del++; next }
   { print }
   END { print del > "/dev/stderr" }
 ' "$SAVE_PATH" 2>&1 > "$TMP")"

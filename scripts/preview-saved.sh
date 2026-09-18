@@ -49,12 +49,13 @@ short() {
 
 tilde() { echo "${1/#$HOME/\~}"; }
 
-nw=0; np=0; nh=0
+nw=0; np=0; nh=0; ne=0
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
     W"$US$NAME$US"*) nw=$((nw + 1)) ;;
     P"$US$NAME$US"*) np=$((np + 1)) ;;
     H"$US$NAME$US"*) nh=$((nh + 1)) ;;
+    E"$US$NAME$US"*) ne=$((ne + 1)) ;;
   esac
 done < "$SAVE_PATH"
 
@@ -71,6 +72,7 @@ printf '%s%s%s [%s%s%s] — %s%sw/%sp%s\n' \
   "$TS_ANSI_SAVED" "$nw" "$np" "$TS_RESET"
 [ -n "$ts" ] && printf '%ssaved: %s%s\n' "$TS_ANSI_SAVED" "$ts" "$TS_RESET"
 [ "$nh" -gt 0 ] && printf '%shistory: %s panes%s\n' "$TS_ANSI_SAVED" "$nh" "$TS_RESET"
+[ "$ne" -gt 0 ] && printf '%senv: %s vars%s\n' "$TS_ANSI_SAVED" "$ne" "$TS_RESET"
 echo
 
 while IFS= read -r wline || [ -n "${wline:-}" ]; do

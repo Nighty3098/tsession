@@ -99,7 +99,8 @@ TMPDIR_WORK="$(mktemp -d)"
 WINLIST="$TMPDIR_WORK/win"
 PANELIST="$TMPDIR_WORK/pane"
 HISTLIST="$TMPDIR_WORK/hist"
-: > "$WINLIST"; : > "$PANELIST"; : > "$HISTLIST"
+ENVLIST="$TMPDIR_WORK/env"
+: > "$WINLIST"; : > "$PANELIST"; : > "$HISTLIST"; : > "$ENVLIST"
 
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
@@ -118,6 +119,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     W"$US"*) printf '%s\n' "$line" >> "$WINLIST" ;;
     P"$US"*) printf '%s\n' "$line" >> "$PANELIST" ;;
     H"$US"*) printf '%s\n' "$line" >> "$HISTLIST" ;;
+    E"$US"*) printf '%s\n' "$line" >> "$ENVLIST" ;;
   esac
 done < "$SAVE_PATH"
 
@@ -145,8 +147,9 @@ done
 
 wins_of() { grep "^W$US$1$US" "$WINLIST" || true; }
 panes_of() { grep "^P$US$1$US$2$US" "$PANELIST" || true; }
+env_in_win() { grep "^E$US$1$US$2$US" "$ENVLIST" || true; }
 
-TOTAL_CMDS_RUN=0; TOTAL_CMDS_SKIPPED=0; TOTAL_HIST=0
+TOTAL_CMDS_RUN=0; TOTAL_CMDS_SKIPPED=0; TOTAL_HIST=0; TOTAL_ENV=0
 
 for s in "${sessions_ordered[@]}"; do
   first_win=1
@@ -207,6 +210,35 @@ for s in "${sessions_ordered[@]}"; do
     if [ -n "${wlayout:-}" ]; then
       tmux select-layout -t "=$s:$widx" "$wlayout" 2>/dev/null || true
     fi
+  done < <(wins_of "$s")
+
+  # Replay saved pane environment (allowlist) before history/commands, so
+  # re-run commands inherit it. E records are grouped by pane; live panes
+  # are paired by ORDER within the window (same as commands below).
+  while IFS= read -r wline || [ -n "${wline:-}" ]; do
+    [ -z "${wline:-}" ] && continue
+    IFS="$US" read -r _ es ewidx _ewn _ewa _ewl <<< "$wline"
+    mapfile -t saved_e < <(env_in_win "$s" "$ewidx")
+    [ "${#saved_e[@]}" -eq 0 ] && continue
+    mapfile -t live_ep < <(live_panes_of "$s" "$ewidx")
+    cur_epidx=""; pi=-1
+    for eline in "${saved_e[@]}"; do
+      [ -z "${eline:-}" ] && continue
+      IFS="$US" read -r _ _fs _fw epidx ename_b64 eval_b64 <<< "$eline"
+      if [ "$epidx" != "$cur_epidx" ]; then cur_epidx="$epidx"; pi=$((pi + 1)); fi
+      lp="${live_ep[$pi]:-}"
+      [ -z "$lp" ] && continue
+      ename="$(b64d "$ename_b64")"
+      evalue="$(b64d "$eval_b64")"
+      case "$ename" in ""|*[!A-Za-z0-9_]*|[0-9]*) continue ;; esac
+      target="=$es:$ewidx.$lp"
+      pane_exists "$target" || continue
+      wait_for_shell "$target" || true
+      tmux set-environment -t "$target" "$ename" "$evalue" 2>/dev/null || true
+      tmux send-keys -t "$target" -l "export $ename=\"\$(echo '$eval_b64' | base64 -d 2>/dev/null || echo '$eval_b64' | base64 -D)\"" 2>/dev/null || continue
+      tmux send-keys -t "$target" Enter 2>/dev/null || true
+      TOTAL_ENV=$((TOTAL_ENV + 1))
+    done
   done < <(wins_of "$s")
 
   # Re-print captured scrollback (approximation: the text is catted into the
@@ -314,5 +346,8 @@ if [ -n "$attached_session" ]; then
   fi
 fi
 
-tmux display-message "$TS_TAG restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history)" 2>/dev/null \
-  || echo "tsession: restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history)"
+msg="restored ${#sessions_ordered[@]} sessions from $SAVE_PATH (${TOTAL_CMDS_RUN} cmds, ${TOTAL_CMDS_SKIPPED} skipped, ${TOTAL_HIST} history"
+[ "$TOTAL_ENV" -gt 0 ] && msg="$msg, ${TOTAL_ENV} env"
+msg="$msg)"
+tmux display-message "$TS_TAG $msg" 2>/dev/null \
+  || echo "tsession: $msg"
