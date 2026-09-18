@@ -73,6 +73,7 @@ run-shell /path/to/tsession/tsession.plugin.tmux
 | `@tsession-save-path`       | `~/.tmux-tsession.save` | Snapshot file (`~` is expanded)                                                            |
 | `@tsession-kill-existing`   | `off`                   | `on` = entering an existing name kills it and creates a fresh session instead of switching |
 | `@tsession-history-lines`   | `0`                     | Scrollback lines captured per pane on save (`0` = off, e.g. `100`)                         |
+| `@tsession-save-env`        | *(empty)*               | Space-separated env names snapshotted per pane and re-exported on restore, e.g. `'NODE_ENV'` |
 | `@tsession-restore-cmds`    | `on`                    | `off` = restore shells only, never re-run saved commands                                   |
 | `@tsession-restore-history` | `on`                    | `off` = skip re-printing captured scrollback on restore                                    |
 | `@tsession-fzf-preview`     | `on`                    | `off` = disable the windows/panes preview in the fzf picker                                |
@@ -107,6 +108,10 @@ torn popup frames.
   save file yet, it tells you to press `Prefix + Ctrl-s` first.
 - **Save:** `Prefix + Ctrl-s` snapshots the current session only (idempotent
   merge). `scripts/save.sh` with no name saves **all** live sessions.
+  The previous save file is kept as `*.bak`. With `@tsession-save-env`,
+  allowlisted pane variables are stored (`E` records, save format v2) and
+  re-exported before commands re-run on restore (read from idle shell
+  prompts via a quick `printenv` query plus tmux pane/session environments).
 - **Restore:** `Prefix + Ctrl-r` rebuilds everything; same-named live sessions
   are killed, windows recreated at their indexes, splits/layouts reapplied,
   cwd restored, saved commands re-typed, active window/pane re-selected.
