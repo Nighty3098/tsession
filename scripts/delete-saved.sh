@@ -30,7 +30,8 @@ if [ ! -f "$SAVE_PATH" ]; then
   exit 1
 fi
 
-TMP="$SAVE_PATH.tmp.$$"
+TMP="$(mktemp "${SAVE_PATH}.tmp.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
 removed="$(awk -v US="$US" -v name="$NAME" '
   BEGIN { FS = US; OFS = US; del = 0 }
   /^(S|W|P|H|E)/ && $2 == name { del++; next }

@@ -73,7 +73,7 @@ run-shell /path/to/tsession/tsession.plugin.tmux
 | `@tsession-save-path`       | `~/.tmux-tsession.save` | Snapshot file (`~` is expanded)                                                            |
 | `@tsession-kill-existing`   | `off`                   | `on` = entering an existing name kills it and creates a fresh session instead of switching |
 | `@tsession-history-lines`   | `0`                     | Scrollback lines captured per pane on save (`0` = off, e.g. `100`)                         |
-| `@tsession-save-env`        | *(empty)*               | Space-separated env names snapshotted per pane and re-exported on restore, e.g. `'NODE_ENV'` |
+| `@tsession-save-env`        | `VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV PATH` | Space-separated env names snapshotted per pane and re-exported on restore; append e.g. `'NODE_ENV'`; `off`/`none` disables |
 | `@tsession-restore-cmds`    | `on`                    | `off` = restore shells only, never re-run saved commands                                   |
 | `@tsession-restore-history` | `on`                    | `off` = skip re-printing captured scrollback on restore                                    |
 | `@tsession-fzf-preview`     | `on`                    | `off` = disable the windows/panes preview in the fzf picker                                |
@@ -108,14 +108,23 @@ torn popup frames.
   save file yet, it tells you to press `Prefix + Ctrl-s` first.
 - **Save:** `Prefix + Ctrl-s` snapshots the current session only (idempotent
   merge). `scripts/save.sh` with no name saves **all** live sessions.
-  The previous save file is kept as `*.bak`. With `@tsession-save-env`,
-  allowlisted pane variables are stored (`E` records, save format v2) and
-  re-exported before commands re-run on restore (read from idle shell
-  prompts via a quick `printenv` query plus tmux pane/session environments).
+  The previous save file is kept as `*.bak`. Pane variables from
+  `@tsession-save-env` (defaults cover `VIRTUAL_ENV`/`CONDA_*`/`PATH`, so
+  venvs survive out of the box) are stored (`E` records, save format v2)
+  and re-exported before commands re-run on restore: busy panes are read
+  from the child process environment (no keystrokes, fish-safe), idle
+  shells fall back to one `printenv` query per pane (POSIX + fish), then
+  tmux pane/session/global environments. Missing working directories fall
+  back to `$HOME` and are reported in the restore summary.
 - **Restore:** `Prefix + Ctrl-r` rebuilds everything; same-named live sessions
   are killed, windows recreated at their indexes, splits/layouts reapplied,
-  cwd restored, saved commands re-typed, active window/pane re-selected.
+  cwd restored (`cd` is re-issued before each re-typed command in case the
+  shell rc changed directory), saved commands re-typed, active window/pane
+  re-selected (saved→live pane mapping is by order, so a different
+  `pane-base-index` no longer misplaces them).
   `scripts/restore.sh [path] [session]` restores one session and switches to it.
+  Bare shells are skipped, `bash script.sh` and `sudo`/`env`-wrapped commands
+  are kept and resolved to the real program.
 
 ### Example configuration
 

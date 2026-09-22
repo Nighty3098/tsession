@@ -34,7 +34,8 @@ fi
 
 b64d() {
   if [ -z "${1:-}" ]; then printf ''; return 0; fi
-  printf '%s' "$1" | base64 -d 2>/dev/null || printf '%s' "$1" | base64 -D 2>/dev/null || printf ''
+  case "$1" in *[!A-Za-z0-9+/=]*) printf ''; return 1 ;; esac
+  printf '%s' "$1" | base64 -d 2>/dev/null || printf '%s' "$1" | base64 -D 2>/dev/null || { printf ''; return 1; }
 }
 
 short() {
@@ -78,21 +79,21 @@ echo
 while IFS= read -r wline || [ -n "${wline:-}" ]; do
   [ -z "${wline:-}" ] && continue
   IFS="$US" read -r _ _ws widx wname_b64 wactive _wlayout <<< "$wline"
-  wname="$(b64d "$wname_b64")"
+  wname="$(b64d "$wname_b64" || true)"
   [ -z "$wname" ] && wname="main"
   mark=""; [ "$wactive" = "1" ] && mark=" *"
   printf '%s#%s%s %s%s%s%s\n' "$TS_ANSI_WIN" "$widx" "$TS_RESET" "$(short "$wname" 40)" "$TS_ANSI_MARK" "$mark" "$TS_RESET"
   while IFS= read -r pline || [ -n "${pline:-}" ]; do
     [ -z "${pline:-}" ] && continue
     IFS="$US" read -r _ _ps _pw pidx pactive cwd_b64 cmd_b64 <<< "$pline"
-    pcwd="$(tilde "$(b64d "$cwd_b64")")"
-    pcmd="$(b64d "$cmd_b64")"
+    pcwd="$(tilde "$(b64d "$cwd_b64" || true)")"
+    pcmd="$(b64d "$cmd_b64" || true)"
     pmark=""; [ "$pactive" = "1" ] && pmark="*"
     printf '  %s.%s%s%s%s %s\n' "$TS_ANSI_SAVED" "$pidx" "$TS_RESET" \
       "$TS_ANSI_MARK" "$pmark" "$(short "$pcwd" 60)"
     [ -n "$pcmd" ] && printf '    %s$%s %s\n' "$TS_ANSI_DOLLAR" "$TS_RESET" "$(short "$pcmd" 80)"
-  done < <(grep "^P$US$NAME$US$widx$US" "$SAVE_PATH" || true)
-done < <(grep "^W$US$NAME$US" "$SAVE_PATH" || true)
+  done < <(grep -F "P${US}${NAME}${US}${widx}${US}" "$SAVE_PATH" || true)
+done < <(grep -F "W${US}${NAME}${US}" "$SAVE_PATH" || true)
 
 if [ "$state" = "alive" ]; then
   echo
