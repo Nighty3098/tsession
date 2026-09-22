@@ -323,6 +323,18 @@ for s in "${sessions_ordered[@]}"; do
     [ "${#saved_e[@]}" -eq 0 ] && continue
     mapfile -t live_ep < <(live_panes_of "$s" "$ewidx")
     cur_epidx=""; pi=-1
+    # Batch all exports of one live pane into a single send-keys line:
+    # one prompt roundtrip per pane instead of per variable.
+    batch_target=""; batch_cmds=""; batch_n=0
+    flush_env_batch() {
+      [ -n "$batch_target" ] && [ -n "$batch_cmds" ] || return 0
+      pane_exists "$batch_target" || { batch_target=""; batch_cmds=""; return 0; }
+      wait_for_shell "$batch_target" || true
+      tmux send-keys -t "$batch_target" -l "$batch_cmds" 2>/dev/null || { batch_target=""; batch_cmds=""; return 0; }
+      tmux send-keys -t "$batch_target" Enter 2>/dev/null || true
+      settle
+      batch_target=""; batch_cmds=""
+    }
     for eline in "${saved_e[@]}"; do
       [ -z "${eline:-}" ] && continue
       IFS="$US" read -r _ _fs _fw epidx ename_b64 eval_b64 <<< "$eline"
@@ -337,16 +349,27 @@ for s in "${sessions_ordered[@]}"; do
       [ -n "${evalue:-}" ] || continue
       target="=$es:$ewidx.$lp"
       pane_exists "$target" || continue
-      wait_for_shell "$target" || true
-      # Session env for future panes + explicit export in the live shell.
+      # Session env for future panes + batched explicit export below.
       # eval_b64 is base64-alphabet only (checked above), so embedding it
       # in single quotes is safe; decoded bytes are never re-parsed.
       tmux set-environment -t "=$es" "$ename" "$evalue" 2>/dev/null || true
-      tmux send-keys -t "$target" -l "export $ename=\"\$(echo '$eval_b64' | base64 -d 2>/dev/null || echo '$eval_b64' | base64 -D)\"" 2>/dev/null || continue
-      tmux send-keys -t "$target" Enter 2>/dev/null || true
-      settle
-      TOTAL_ENV=$((TOTAL_ENV + 1))
+      if [ "$target" != "$batch_target" ] && [ -n "$batch_target" ]; then
+        flush_env_batch
+        TOTAL_ENV=$((TOTAL_ENV + batch_n))
+        batch_n=0
+      fi
+      batch_target="$target"
+      if [ -n "$batch_cmds" ]; then batch_cmds="$batch_cmds; "; fi
+      batch_cmds="${batch_cmds}export $ename=\"\$(echo '$eval_b64' | base64 -d 2>/dev/null || echo '$eval_b64' | base64 -D)\""
+      batch_n=$((batch_n + 1))
     done
+    if [ -n "$batch_target" ]; then
+      batch_n="${batch_n:-0}"
+      flush_env_batch
+      TOTAL_ENV=$((TOTAL_ENV + batch_n))
+    fi
+    unset -f flush_env_batch
+    unset batch_target batch_cmds batch_n
   done < <(wins_of "$s")
 
   # Re-print captured scrollback (approximation: the text is catted into the
@@ -408,30 +431,42 @@ for s in "${sessions_ordered[@]}"; do
       pcmd="$(b64d "$cmd_b64" || true)"
       lp="${live_cp[$pi]:-}"
       pi=$((pi + 1))
-      [ -z "$pcmd" ] && continue
       [ -z "$lp" ] && { cmds_skipped=$((cmds_skipped + 1)); continue; }
-      [ "$RESTORE_CMDS" = "on" ] || { cmds_skipped=$((cmds_skipped + 1)); continue; }
-      pcmd="$(sanitize_cmd "$pcmd")"
-      [ -z "$pcmd" ] && continue
       target="=$ps:$pw.$lp"
       pane_exists "$target" || { cmds_skipped=$((cmds_skipped + 1)); continue; }
-      is_bare_shell_cmd "$pcmd" && continue
-      if ! cmd_available "$pcmd"; then
-        cmds_skipped=$((cmds_skipped + 1))
-        continue
+      # Guarantee the saved working dir no matter what: panes are created
+      # with -c, but a shell rc may cd elsewhere on startup (an idle shell
+      # with no command would otherwise stay there, e.g. in $HOME).
+      want_cd="$HOME"
+      [ -n "$pcwd" ] && [ -d "$pcwd" ] && want_cd="$pcwd"
+      # Decide whether there is a runnable command for this pane.
+      runcmd=""
+      if [ -n "$pcmd" ]; then
+        if [ "$RESTORE_CMDS" != "on" ]; then
+          cmds_skipped=$((cmds_skipped + 1))
+        else
+          pcmd="$(sanitize_cmd "$pcmd")"
+          if [ -z "$pcmd" ]; then
+            :
+          elif is_bare_shell_cmd "$pcmd"; then
+            :
+          elif ! cmd_available "$pcmd"; then
+            cmds_skipped=$((cmds_skipped + 1))
+          else
+            runcmd="$pcmd"
+          fi
+        fi
       fi
       wait_for_shell "$target" || true
-      # Belt and braces: the pane was created with -c "$pcwd", but a shell
-      # rc may have cd'ed elsewhere — ensure the right dir before re-typing.
-      # Combined into ONE line so export/cd/cmd can't interleave.
-      if [ -n "$pcwd" ] && [ -d "$pcwd" ]; then
-        tmux send-keys -t "$target" -l "cd $(shquote "$pcwd") && $pcmd" 2>/dev/null || continue
+      if [ -n "$runcmd" ]; then
+        # Combined into ONE line so export/cd/cmd can't interleave.
+        tmux send-keys -t "$target" -l "cd $(shquote "$want_cd") && $runcmd" 2>/dev/null || continue
       else
-        tmux send-keys -t "$target" -l "$pcmd" 2>/dev/null || continue
+        tmux send-keys -t "$target" -l "cd $(shquote "$want_cd")" 2>/dev/null || continue
       fi
       tmux send-keys -t "$target" Enter 2>/dev/null || continue
       settle
-      cmds_run=$((cmds_run + 1))
+      [ -n "$runcmd" ] && cmds_run=$((cmds_run + 1))
     done
   done < <(wins_of "$s")
   TOTAL_CMDS_RUN=$((TOTAL_CMDS_RUN + cmds_run))

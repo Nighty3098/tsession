@@ -61,7 +61,16 @@ case "${HISTORY_LINES:-}" in ''|*[!0-9]*) HISTORY_LINES=0 ;; esac
 # restore re-exports them before re-running commands.
 DEFAULT_SAVE_ENV="VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV PATH"
 SAVE_ENV_RAW="$(tmux show-option -gqv "@tsession-save-env" 2>/dev/null || true)"
-case "$SAVE_ENV_RAW" in off|none|OFF|NONE) SAVE_ENV="" ;; "") SAVE_ENV="$DEFAULT_SAVE_ENV" ;; *) SAVE_ENV="$SAVE_ENV_RAW" ;; esac
+# '*' / 'all' = auto mode: snapshot ALL exported vars of each pane
+# (minus volatile ones, see is_volatile_env), so plain `export FOO=bar`
+# just works without pre-declaring names.
+AUTO_ENV=0
+case "$SAVE_ENV_RAW" in
+  off|none|OFF|NONE) SAVE_ENV="" ;;
+  "" ) SAVE_ENV="$DEFAULT_SAVE_ENV" ;;
+  \*|all|ALL) SAVE_ENV=""; AUTO_ENV=1 ;;
+  *) SAVE_ENV="$SAVE_ENV_RAW" ;;
+esac
 SAVE_ENV_CLEAN=""
 for _n in $SAVE_ENV; do
   _c="$(printf '%s' "$_n" | tr -cd 'A-Za-z0-9_')"
@@ -248,10 +257,10 @@ query_shell_env() {
   return 0
 }
 
-# Parse a query outfile, emitting E records for hits. Prints hit names
-# (space-separated) on stdout for bookkeeping? No — emits records directly.
+# Parse a query outfile, emitting E records for hits.
+# Optional $5 = file to append plain hit names to (for dedupe).
 emit_query_outfile() {
-  local sess="$1" widx="$2" pidx="$3" outfile="$4"
+  local sess="$1" widx="$2" pidx="$3" outfile="$4" namesfile="${5:-}"
   local line qname="" qval="" qfirst=1 qactive=0 tsprefix='__TSENV_VAR__ '
   grep -q '__TSENV_DONE__' "$outfile" 2>/dev/null || return 0
   while IFS= read -r line || [ -n "${line:-}" ]; do
@@ -266,6 +275,7 @@ emit_query_outfile() {
       __TSENV_END__)
         if [ -n "$qname" ]; then
           printf 'E%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$(b64 "$qname")" "$US" "$(b64 "$qval")"
+          [ -n "$namesfile" ] && printf '%s\n' "$qname" >> "$namesfile"
         fi
         qname=""; continue ;;
       __TSENV_UNSET__) qname=""; continue ;;
@@ -279,7 +289,160 @@ $line"; fi
   done < "$outfile"
 }
 
-# Value of $name for a pane WITHOUT key injection: /proc subtree (fresh
+# Session-specific vars that must NOT be snapshotted in auto mode:
+# restoring stale values breaks the new session (old pane ids, dead
+# ssh-agent socket, wrong nesting level).
+is_volatile_env() {
+  case "$1" in
+    _|SHLVL|TMUX|TMUX_PANE|SSH_AUTH_SOCK|SSH_AGENT_PID) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_env_name() {
+  case "$1" in ""|[0-9]*|*[!A-Za-z0-9_]* ) return 1 ;; *) return 0 ;; esac
+}
+
+# Dump the WHOLE environ of one process (NUL-separated, exact): used in
+# auto mode for busy panes whose leaf inherited the live shell env
+# (exports ARE visible here, unlike in /proc of the shell itself).
+# Skips volatile/empty names. Optional $5 = file for plain hit names.
+# Returns 1 when /proc is unavailable.
+dump_proc_environ_all() {
+  local pid="$1" sess="$2" widx="$3" pidx="$4" namesfile="${5:-}"
+  local entry name val
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -r "/proc/$pid/environ" ] || return 1
+  while IFS= read -r -d '' entry || [ -n "${entry:-}" ]; do
+    case "$entry" in *=*) ;;
+      *) continue ;;
+    esac
+    name="${entry%%=*}"
+    valid_env_name "$name" || continue
+    is_volatile_env "$name" && continue
+    val="${entry#*=}"
+    [ -n "${val:-}" ] || continue
+    printf 'E%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$(b64 "$name")" "$US" "$(b64 "$val")"
+    [ -n "$namesfile" ] && printf '%s\n' "$name" >> "$namesfile"
+  done < "/proc/$pid/environ"
+  return 0
+}
+
+# Merge tmux pane/session/global environments into E records, skipping
+# names already dumped (space-padded $4). Emits E records plus
+# TSFOUND:<name> tracking lines (caller filters those out).
+dump_tmux_envs() {
+  local sess="$1" widx="$2" pidx="$3" found="$4"
+  local target="=$sess:$widx.$pidx" src line name val
+  for src in "$target" "=$sess" GLOBAL; do
+    if [ "$src" = "GLOBAL" ]; then
+      src_list="$(tmux show-environment -g 2>/dev/null || true)"
+    else
+      src_list="$(tmux show-environment -t "$src" 2>/dev/null || true)"
+    fi
+    while IFS= read -r line || [ -n "${line:-}" ]; do
+      case "$line" in *=*) ;;
+        *) continue ;;
+      esac
+      name="${line%%=*}"
+      valid_env_name "$name" || continue
+      is_volatile_env "$name" && continue
+      case "$found" in *" $name "*) continue ;; esac
+      val="${line#*=}"
+      [ -n "${val:-}" ] || continue
+      printf 'E%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$(b64 "$name")" "$US" "$(b64 "$val")"
+      printf 'TSFOUND:%s\n' "$name"
+      found="$found$name "
+    done <<< "$src_list"
+  done
+  return 0
+}
+
+# Query the LIST of exported names from an idle shell (auto mode step 1).
+# Prints names (space-separated) on stdout. Always returns 0.
+query_shell_names() {
+  local target="$1" shell="$2" outfile="$3" q line name names
+  rm -f "$outfile"
+  case "$shell" in
+    sh|bash|dash|zsh|ksh)
+      q=" { export -p 2>/dev/null; echo '__TSENV_NAMES_DONE__'; } > '$outfile' 2>/dev/null"
+      ;;
+    fish)
+      q="begin; set -nx; echo '__TSENV_NAMES_DONE__'; end > '$outfile' 2>/dev/null"
+      ;;
+    *) return 0 ;;
+  esac
+  tmux send-keys -t "$target" C-c 2>/dev/null || return 0
+  tmux send-keys -t "$target" -l "$q" 2>/dev/null || return 0
+  tmux send-keys -t "$target" Enter 2>/dev/null || return 0
+  for _ in $(seq 1 25); do
+    if grep -q '__TSENV_NAMES_DONE__' "$outfile" 2>/dev/null; then break; fi
+    sleep 0.1
+  done
+  grep -q '__TSENV_NAMES_DONE__' "$outfile" 2>/dev/null || return 0
+  names=""
+  case "$shell" in
+    fish)
+      while IFS= read -r line || [ -n "${line:-}" ]; do
+        line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        valid_env_name "$line" || continue
+        is_volatile_env "$line" && continue
+        names="$names $line"
+      done < "$outfile"
+      ;;
+    *)
+      while IFS= read -r line || [ -n "${line:-}" ]; do
+        case "$line" in __TSENV_NAMES_DONE__) break ;; esac
+        name="$(printf '%s' "$line" | sed -n 's/^\(declare -x \|export \)\([A-Za-z_][A-Za-z0-9_]*\).*/\2/p')"
+        [ -n "${name:-}" ] || continue
+        is_volatile_env "$name" && continue
+        names="$names $name"
+      done < "$outfile"
+      ;;
+  esac
+  printf '%s' "${names# }"
+  return 0
+}
+
+# Auto mode dump for one pane ('*' / 'all'): everything exported.
+# Busy panes: whole /proc leaf environ (no keystrokes) + tmux envs.
+# Idle shells: names query + values query (exports invisible in /proc
+# of the shell itself) + tmux envs.
+dump_auto_env() {
+  local sess="$1" widx="$2" pidx="$3" pid="$4"
+  local target="=$sess:$widx.$pidx" leaf out names namesfile found eline
+  leaf="$(leaf_base_of_pane "$pid")"
+  namesfile="$(mktemp /tmp/tsenv-names.XXXXXX)"
+  case "$leaf" in sh|bash|dash|zsh|ksh|fish)
+    out="$(mktemp /tmp/tsenv-names-q.XXXXXX)"
+    names="$(query_shell_names "$target" "$leaf" "$out")"
+    rm -f "$out"
+    if [ -n "${names:-}" ]; then
+      out="$(mktemp /tmp/tsenv.XXXXXX)"
+      if query_shell_env "$target" "$leaf" "$out" "$names"; then
+        emit_query_outfile "$sess" "$widx" "$pidx" "$out" "$namesfile"
+      fi
+      rm -f "$out"
+    fi
+    ;;
+    *)
+      # Busy pane (or pane gone): leaf environ, if readable.
+      dump_proc_environ_all "$(deepest_pid_of "$pid" || true)" "$sess" "$widx" "$pidx" "$namesfile" || true
+      ;;
+  esac
+  # Merge tmux envs for anything process-side missed.
+  found=" "
+  if [ -s "$namesfile" ]; then
+    found=" $(tr '\n' ' ' < "$namesfile" | sed 's/  */ /g') "
+  fi
+  dump_tmux_envs "$sess" "$widx" "$pidx" "$found" | {
+    while IFS= read -r eline || [ -n "${eline:-}" ]; do
+      case "$eline" in TSFOUND:*) continue ;; *) printf '%s\n' "$eline" ;; esac
+    done
+  }
+  rm -f "$namesfile"
+  return 0
+}
 # inherited env, covers busy panes) then tmux pane/session/global envs.
 pane_env_value() {
   local pane_pid="$1" sess="$2" widx="$3" pidx="$4" name="$5"
@@ -304,6 +467,10 @@ pane_env_value() {
 dump_pane_env() {
   local sess="$1" widx="$2" pidx="$3" pid="$4"
   local name val leaf target out missing
+  if [ "$AUTO_ENV" = "1" ]; then
+    dump_auto_env "$sess" "$widx" "$pidx" "$pid"
+    return 0
+  fi
   [ -n "$SAVE_ENV_CLEAN" ] || return 0
   target="=$sess:$widx.$pidx"
   missing=""
