@@ -15,7 +15,8 @@
 
 A lightweight tmux session manager: prompt-based session switching/creation,
 an interactive saved-session picker, and snapshot save/restore (window order,
-names, layouts, working directories, running commands).
+names, layouts, zoom, working directories, running commands, pane titles,
+window flags, environment).
 
 ## Features
 
@@ -25,8 +26,10 @@ names, layouts, working directories, running commands).
   `●` = alive (switch), `○` = saved only (restore + switch). With fzf:
   `Enter` switch/restore, `D` delete snapshot, `X` kill live, `C` clone,
   `R` rename, `?` live preview of windows/panes.
-- **Save / restore snapshots** — dump sessions, windows, panes, cwds and
-  running commands into a single file, then rebuild everything after a reboot
+- **Save / restore snapshots** — dump sessions, windows, panes, cwds,
+  running commands, pane titles, window flags (active/alternate/zoom),
+  per-window `automatic-rename`, grouped (linked) sessions and client state
+  into a single file, then rebuild everything after a reboot
   or `kill-server` — all at once or one session. Optional scrollback capture.
 - **Zero dependencies** beyond tmux plus standard `base64` and `ps`.
   Python 3 is used for the picker's tear-free fzf relay (falls back to bare
@@ -74,6 +77,7 @@ run-shell /path/to/tsession/tsession.plugin.tmux
 | `@tsession-kill-existing`   | `off`                   | `on` = entering an existing name kills it and creates a fresh session instead of switching |
 | `@tsession-history-lines`   | `0`                     | Scrollback lines captured per pane on save (`0` = off, e.g. `100`)                         |
 | `@tsession-save-env`        | `VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV PATH` | Space-separated env names snapshotted per pane and re-exported on restore; `'*'`/`all` = snapshot **all** exported vars (minus volatile ones like `TMUX`, `SHLVL`, dead `SSH_AUTH_SOCK`); append e.g. `'NODE_ENV'`; `off`/`none` disables |
+| `@tsession-save-env-query`  | `on` | `off` = never type probe commands into panes while saving (only `/proc` + tmux environments are snapshotted; idle-shell `export`s may be missed) |
 | `@tsession-restore-cmds`    | `on`                    | `off` = restore shells only, never re-run saved commands                                   |
 | `@tsession-restore-history` | `on`                    | `off` = skip re-printing captured scrollback on restore                                    |
 | `@tsession-fzf-preview`     | `on`                    | `off` = disable the windows/panes preview in the fzf picker                                |
@@ -111,19 +115,29 @@ torn popup frames.
   The previous save file is kept as `*.bak`. Pane variables from
   `@tsession-save-env` (defaults cover `VIRTUAL_ENV`/`CONDA_*`/`PATH`, so
   venvs survive out of the box; `'*'` snapshots everything you `export`ed)
-  are stored (`E` records, save format v2)
+  are stored (`E` records, save format v3)
   and re-exported before commands re-run on restore: busy panes are read
   from the child process environment (no keystrokes, fish-safe), idle
   shells fall back to `printenv` queries (POSIX + fish; one names query +
-  one values query in `'*'` mode), then tmux pane/session/global
-  environments. Missing working directories fall
+  one values query in `'*'` mode; disable all probing with
+  `@tsession-save-env-query 'off'`), then tmux pane/session/global
+  environments. History is captured before any probing so the probe
+  keystrokes never pollute the snapshot. On restore each variable is set
+  in the pane's own tmux environment (session fallback on old tmux) and
+  exported in the shell. Missing working directories fall
   back to `$HOME` and are reported in the restore summary.
 - **Restore:** `Prefix + Ctrl-r` rebuilds everything; same-named live sessions
-  are killed, windows recreated at their indexes, splits/layouts reapplied,
+  are killed, windows recreated at their indexes, splits/layouts reapplied
+  (panes are minimized first so complex layouts fit small terminals),
   cwd restored (an explicit `cd` is sent to every pane, so a shell rc that
-  cds elsewhere on startup can't leave idle shells in `$HOME`), saved commands re-typed, active window/pane
+  cds elsewhere on startup can't leave idle shells in `$HOME`), pane titles
+  and per-window `automatic-rename` reapplied, zoomed windows re-zoomed,
+  saved commands re-typed, active/alternate windows re-selected
+  (alternate first, active last, resurrect-style) and active panes
   re-selected (saved→live pane mapping is by order, so a different
-  `pane-base-index` no longer misplaces them).
+  `pane-base-index` no longer misplaces them). Grouped (linked) sessions
+  are re-linked to their originals and the previously attached/last
+  session is re-selected.
   `scripts/restore.sh [path] [session]` restores one session and switches to it.
   Bare shells are skipped, `bash script.sh` and `sudo`/`env`-wrapped commands
   are kept and resolved to the real program.

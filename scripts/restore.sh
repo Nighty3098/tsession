@@ -181,7 +181,10 @@ WINLIST="$TMPDIR_WORK/win"
 PANELIST="$TMPDIR_WORK/pane"
 HISTLIST="$TMPDIR_WORK/hist"
 ENVLIST="$TMPDIR_WORK/env"
-: > "$WINLIST"; : > "$PANELIST"; : > "$HISTLIST"; : > "$ENVLIST"
+GROUPLIST="$TMPDIR_WORK/group"
+: > "$WINLIST"; : > "$PANELIST"; : > "$HISTLIST"; : > "$ENVLIST"; : > "$GROUPLIST"
+CLIENT_SESSION=""
+CLIENT_LAST_SESSION=""
 
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
@@ -197,6 +200,16 @@ while IFS= read -r line || [ -n "$line" ]; do
         fi
       fi
       ;;
+    T"$US"*)
+      # Single-session restore keeps the client where it is: global
+      # client state belongs to full restores only.
+      if [ -z "$ONLY" ]; then
+        IFS="$US" read -r _ tclient tlast <<< "$line"
+        [ -z "${CLIENT_SESSION:-}" ] && CLIENT_SESSION="${tclient:-}"
+        [ -z "${CLIENT_LAST_SESSION:-}" ] && CLIENT_LAST_SESSION="${tlast:-}"
+      fi
+      ;;
+    G"$US"*) printf '%s\n' "$line" >> "$GROUPLIST" ;;
     W"$US"*) printf '%s\n' "$line" >> "$WINLIST" ;;
     P"$US"*) printf '%s\n' "$line" >> "$PANELIST" ;;
     H"$US"*) printf '%s\n' "$line" >> "$HISTLIST" ;;
@@ -245,7 +258,8 @@ for s in "${sessions_ordered[@]}"; do
   first_win=1
   while IFS= read -r wline || [ -n "${wline:-}" ]; do
     [ -z "${wline:-}" ] && continue
-    IFS="$US" read -r _ _ws widx wname_b64 wactive wlayout <<< "$wline"
+    # v2 files have no wflags/wauto — they default to empty.
+    IFS="$US" read -r _ _ws widx wname_b64 wactive wlayout wflags wauto <<< "$wline"
     wname="$(b64d "$wname_b64" || true)"
     [ -z "$wname" ] && wname="main"
 
@@ -253,7 +267,7 @@ for s in "${sessions_ordered[@]}"; do
     first_cmd=""
     while IFS= read -r pline || [ -n "${pline:-}" ]; do
       [ -z "${pline:-}" ] && continue
-      IFS="$US" read -r _ _ps _pw _pidx _pactive cwd_b64 cmd_b64 <<< "$pline"
+      IFS="$US" read -r _ _ps _pw _pidx _pactive cwd_b64 cmd_b64 _ptitle _pcur <<< "$pline"
       first_cwd="$(b64d "$cwd_b64" || true)"
       first_cmd="$(b64d "$cmd_b64" || true)"
       break
@@ -284,11 +298,18 @@ for s in "${sessions_ordered[@]}"; do
       fi
     fi
     tmux rename-window -t "=$s:$widx" "$wname" 2>/dev/null || true
+    # Restore the automatic-rename option (resurrect-style): ':' means
+    # the option was unset at save time.
+    if [ "${wauto:-}" = ":" ]; then
+      tmux set-option -u -t "=$s:$widx" automatic-rename 2>/dev/null || true
+    elif [ -n "${wauto:-}" ]; then
+      tmux set-option -t "=$s:$widx" automatic-rename "$wauto" 2>/dev/null || true
+    fi
   done < <(wins_of "$s")
 
   while IFS= read -r wline || [ -n "${wline:-}" ]; do
     [ -z "${wline:-}" ] && continue
-    IFS="$US" read -r _ _ws widx _wname_b64 _wactive wlayout <<< "$wline"
+    IFS="$US" read -r _ _ws widx _wname_b64 _wactive wlayout _wflags _wauto <<< "$wline"
 
     mapfile -t plines < <(sorted_panes_of "$s" "$widx")
     [ "${#plines[@]}" -le 1 ] && continue
@@ -296,7 +317,7 @@ for s in "${sessions_ordered[@]}"; do
     first_p=1
     for pline in "${plines[@]}"; do
       if [ "$first_p" -eq 1 ]; then first_p=0; continue; fi
-      IFS="$US" read -r _ _ps _pw _pidx _pactive cwd_b64 _cmd_b64 <<< "$pline"
+      IFS="$US" read -r _ _ps _pw _pidx _pactive cwd_b64 _cmd_b64 _ptitle _pcur <<< "$pline"
       pcwd="$(b64d "$cwd_b64" || true)"
       if [ -n "$pcwd" ] && [ -d "$pcwd" ]; then
         :
@@ -306,10 +327,35 @@ for s in "${sessions_ordered[@]}"; do
       fi
       tmux split-window -d -t "=$s:$widx" -c "$pcwd" 2>/dev/null || \
         tmux split-window -d -h -t "=$s:$widx" -c "$pcwd" 2>/dev/null || true
+      # Minimize so more panes fit on small terminals (resurrect-style);
+      # the saved layout is reapplied below.
+      tmux resize-pane -t "=$s:$widx" -U "999" 2>/dev/null || true
     done
     if [ -n "${wlayout:-}" ]; then
       tmux select-layout -t "=$s:$widx" "$wlayout" 2>/dev/null || true
     fi
+  done < <(wins_of "$s")
+
+  # Restore saved pane titles (v3+; v2 files have no title field).
+  # Paired saved->live by ORDER within the window (same as env/commands).
+  while IFS= read -r wline || [ -n "${wline:-}" ]; do
+    [ -z "${wline:-}" ] && continue
+    IFS="$US" read -r _ _ts twidx _twn _twa _twl _twf _twa2 <<< "$wline"
+    mapfile -t saved_t < <(sorted_panes_of "$s" "$twidx")
+    [ "${#saved_t[@]}" -eq 0 ] && continue
+    mapfile -t live_tp < <(live_panes_of "$s" "$twidx")
+    ti=0
+    for tline in "${saved_t[@]}"; do
+      [ -z "${tline:-}" ] && { ti=$((ti + 1)); continue; }
+      IFS="$US" read -r _ _tps _tpw _tpidx _tpactive _tcwd _tcmd title_b64 _tcur <<< "$tline"
+      lp="${live_tp[$ti]:-}"
+      ti=$((ti + 1))
+      [ -z "$lp" ] && continue
+      is_b64 "$title_b64" || continue
+      ptitle="$(b64d "$title_b64" || true)"
+      [ -n "$ptitle" ] || continue
+      tmux select-pane -t "=$s:$twidx.$lp" -T "$ptitle" 2>/dev/null || true
+    done
   done < <(wins_of "$s")
 
   # Replay saved pane environment (allowlist) before history/commands, so
@@ -318,7 +364,7 @@ for s in "${sessions_ordered[@]}"; do
   # so replay works when pane-base-index differs from the save-time server.
   while IFS= read -r wline || [ -n "${wline:-}" ]; do
     [ -z "${wline:-}" ] && continue
-    IFS="$US" read -r _ es ewidx _ewn _ewa _ewl <<< "$wline"
+    IFS="$US" read -r _ es ewidx _ewn _ewa _ewl _ewf _ewa2 <<< "$wline"
     mapfile -t saved_e < <(env_in_win "$s" "$ewidx" | sort -t "$US" -k4,4n || true)
     [ "${#saved_e[@]}" -eq 0 ] && continue
     mapfile -t live_ep < <(live_panes_of "$s" "$ewidx")
@@ -349,10 +395,12 @@ for s in "${sessions_ordered[@]}"; do
       [ -n "${evalue:-}" ] || continue
       target="=$es:$ewidx.$lp"
       pane_exists "$target" || continue
-      # Session env for future panes + batched explicit export below.
+      # Pane-scoped tmux env (falls back to session scope on old tmux)
+      # plus a batched explicit export below, so re-run commands inherit it.
       # eval_b64 is base64-alphabet only (checked above), so embedding it
       # in single quotes is safe; decoded bytes are never re-parsed.
-      tmux set-environment -t "=$es" "$ename" "$evalue" 2>/dev/null || true
+      tmux set-environment -t "$target" "$ename" "$evalue" 2>/dev/null \
+        || tmux set-environment -t "=$es" "$ename" "$evalue" 2>/dev/null || true
       if [ "$target" != "$batch_target" ] && [ -n "$batch_target" ]; then
         flush_env_batch
         TOTAL_ENV=$((TOTAL_ENV + batch_n))
@@ -384,7 +432,7 @@ for s in "${sessions_ordered[@]}"; do
     mkdir -p "$HISTCACHE" 2>/dev/null || true
     while IFS= read -r wline || [ -n "${wline:-}" ]; do
       [ -z "${wline:-}" ] && continue
-      IFS="$US" read -r _ _hs hwidx _wn _wa _wl <<< "$wline"
+      IFS="$US" read -r _ _hs hwidx _wn _wa _wl _wf _wa2 <<< "$wline"
       mapfile -t saved_h < <(hist_in_win "$s" "$hwidx" | sort -t "$US" -k4,4n || true)
       [ "${#saved_h[@]}" -eq 0 ] && continue
       mapfile -t live_hp < <(live_panes_of "$s" "$hwidx")
@@ -419,14 +467,14 @@ for s in "${sessions_ordered[@]}"; do
   cmds_run=0; cmds_skipped=0
   while IFS= read -r wline || [ -n "${wline:-}" ]; do
     [ -z "${wline:-}" ] && continue
-    IFS="$US" read -r _ _cs cwidx _cwn _cwa _cwl <<< "$wline"
+    IFS="$US" read -r _ _cs cwidx _cwn _cwa _cwl _cwf _cwa2 <<< "$wline"
     mapfile -t saved_p < <(sorted_panes_of "$s" "$cwidx")
     [ "${#saved_p[@]}" -eq 0 ] && continue
     mapfile -t live_cp < <(live_panes_of "$s" "$cwidx")
     pi=0
     for pline in "${saved_p[@]}"; do
       [ -z "${pline:-}" ] && { pi=$((pi + 1)); continue; }
-      IFS="$US" read -r _ ps pw pidx pactive cwd_b64 cmd_b64 <<< "$pline"
+      IFS="$US" read -r _ ps pw pidx pactive cwd_b64 cmd_b64 _pctitle _pccur <<< "$pline"
       pcwd="$(b64d "$cwd_b64" || true)"
       pcmd="$(b64d "$cmd_b64" || true)"
       lp="${live_cp[$pi]:-}"
@@ -473,26 +521,50 @@ for s in "${sessions_ordered[@]}"; do
   TOTAL_CMDS_SKIPPED=$((TOTAL_CMDS_SKIPPED + cmds_skipped))
   TOTAL_HIST=$((TOTAL_HIST + hist_replayed))
 
+  # Active + alternate windows: select the alternate first and the active
+  # last, so tmux's own `-` marker lands correctly (resurrect-style).
+  # wflags carries '*' (active) / '-' (alternate); wactive is the fallback.
   while IFS= read -r wline || [ -n "${wline:-}" ]; do
     [ -z "${wline:-}" ] && continue
-    IFS="$US" read -r _ _ws widx _wname_b64 wactive _wlayout <<< "$wline"
-    if [ "$wactive" = "1" ]; then
+    IFS="$US" read -r _ _ws widx _wname_b64 wactive _wlayout wflags _wauto <<< "$wline"
+    # v2 files have no wflags: alternate selection is left to tmux.
+    is_alt=0
+    case "${wflags:-}" in *"-"*) is_alt=1 ;; esac
+    if [ "$is_alt" = "1" ]; then
       tmux select-window -t "=$s:$widx" 2>/dev/null || true
     fi
+  done < <(wins_of "$s")
+  while IFS= read -r wline || [ -n "${wline:-}" ]; do
+    [ -z "${wline:-}" ] && continue
+    IFS="$US" read -r _ _ws widx _wname_b64 wactive _wlayout wflags _wauto <<< "$wline"
+    is_act=0
+    case "${wflags:-}" in *"\*"*) is_act=1 ;; *) [ "$wactive" = "1" ] && is_act=1 ;; esac
+    if [ "$is_act" = "1" ]; then
+      tmux select-window -t "=$s:$widx" 2>/dev/null || true
+    fi
+  done < <(wins_of "$s")
+  # Zoomed windows (window_flags contains 'Z').
+  while IFS= read -r wline || [ -n "${wline:-}" ]; do
+    [ -z "${wline:-}" ] && continue
+    IFS="$US" read -r _ _zs zwidx _zwn _zwa _zwl zwflags _zwa2 <<< "$wline"
+    case "${zwflags:-}" in *Z*)
+      tmux resize-pane -t "=$s:$zwidx" -Z 2>/dev/null || true
+      ;;
+    esac
   done < <(wins_of "$s")
   # Active pane: map saved pane_index -> live pane_index by ORDER
   # (sorted saved order == creation order). The old code used the saved
   # $pidx directly and broke with a different pane-base-index or gaps.
   while IFS= read -r wline || [ -n "${wline:-}" ]; do
     [ -z "${wline:-}" ] && continue
-    IFS="$US" read -r _ _as awidx _awn _awa _awl <<< "$wline"
+    IFS="$US" read -r _ _as awidx _awn _awa _awl _awf _awa2 <<< "$wline"
     mapfile -t _saved_ap < <(sorted_panes_of "$s" "$awidx")
     [ "${#_saved_ap[@]}" -eq 0 ] && continue
     mapfile -t _live_ap < <(live_panes_of "$s" "$awidx")
     _ai=0
     for _apline in "${_saved_ap[@]}"; do
       [ -z "${_apline:-}" ] && { _ai=$((_ai + 1)); continue; }
-      IFS="$US" read -r _ _aps _apw _apidx _apactive _acwd _acmd <<< "$_apline"
+      IFS="$US" read -r _ _aps _apw _apidx _apactive _acwd _acmd _aptitle _apcur <<< "$_apline"
       _lp="${_live_ap[$_ai]:-}"
       _ai=$((_ai + 1))
       if [ "${_apactive:-}" = "1" ] && [ -n "$_lp" ]; then
@@ -506,7 +578,38 @@ done
 
 
 
-if [ -n "$attached_session" ]; then
+# Grouped (linked) sessions: re-link to their originals (resurrect-style).
+# Skipped in single-session restore (ONLY) — a lone session has no group.
+if [ -z "$ONLY" ] && [ -s "$GROUPLIST" ]; then
+  while IFS= read -r gline || [ -n "${gline:-}" ]; do
+    [ -z "${gline:-}" ] && continue
+    IFS="$US" read -r _ gname gorig galt gactive <<< "$gline"
+    [ -z "${gname:-}" ] && continue
+    [ -z "${gorig:-}" ] && continue
+    tmux has-session -t "=$gorig" 2>/dev/null || continue
+    if ! tmux has-session -t "=$gname" 2>/dev/null; then
+      tmux new-session -d -s "$gname" -t "$gorig" 2>/dev/null || continue
+    fi
+    galt="${galt#:}"; gactive="${gactive#:}"
+    [ -n "$galt" ] && tmux switch-client -t "=$gname:$galt" 2>/dev/null || true
+    [ -n "$gactive" ] && tmux switch-client -t "=$gname:$gactive" 2>/dev/null || true
+  done < "$GROUPLIST"
+fi
+
+# Client state: last session first, active session last (resurrect-style).
+# Falls back to the attached session flag when no T record was saved.
+if [ -n "${CLIENT_LAST_SESSION:-}" ] || [ -n "${CLIENT_SESSION:-}" ]; then
+  if [ -n "${TMUX:-}" ]; then
+    [ -n "${CLIENT_LAST_SESSION:-}" ] && tmux switch-client -t "=$CLIENT_LAST_SESSION" 2>/dev/null || true
+    [ -n "${CLIENT_SESSION:-}" ] && tmux switch-client -t "=$CLIENT_SESSION" 2>/dev/null || true
+  else
+    [ -n "${CLIENT_LAST_SESSION:-}" ] && tmux switch-client -t "=$CLIENT_LAST_SESSION" 2>/dev/null || true
+    if [ -n "${CLIENT_SESSION:-}" ]; then
+      tmux switch-client -t "=$CLIENT_SESSION" 2>/dev/null \
+        || tmux attach-session -t "=$CLIENT_SESSION" 2>/dev/null || true
+    fi
+  fi
+elif [ -n "$attached_session" ]; then
   if [ -n "${TMUX:-}" ]; then
     tmux switch-client -t "=$attached_session" 2>/dev/null || true
   else

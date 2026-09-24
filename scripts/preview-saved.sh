@@ -78,19 +78,24 @@ echo
 
 while IFS= read -r wline || [ -n "${wline:-}" ]; do
   [ -z "${wline:-}" ] && continue
-  IFS="$US" read -r _ _ws widx wname_b64 wactive _wlayout <<< "$wline"
+  # v2 files have no wflags/wauto — they default to empty.
+  IFS="$US" read -r _ _ws widx wname_b64 wactive _wlayout wflags _wauto <<< "$wline"
   wname="$(b64d "$wname_b64" || true)"
   [ -z "$wname" ] && wname="main"
   mark=""; [ "$wactive" = "1" ] && mark=" *"
+  case "${wflags:-}" in *Z*) mark="$mark Z" ;; esac
   printf '%s#%s%s %s%s%s%s\n' "$TS_ANSI_WIN" "$widx" "$TS_RESET" "$(short "$wname" 40)" "$TS_ANSI_MARK" "$mark" "$TS_RESET"
   while IFS= read -r pline || [ -n "${pline:-}" ]; do
     [ -z "${pline:-}" ] && continue
-    IFS="$US" read -r _ _ps _pw pidx pactive cwd_b64 cmd_b64 <<< "$pline"
+    IFS="$US" read -r _ _ps _pw pidx pactive cwd_b64 cmd_b64 title_b64 _cur <<< "$pline"
     pcwd="$(tilde "$(b64d "$cwd_b64" || true)")"
     pcmd="$(b64d "$cmd_b64" || true)"
+    ptitle="$(b64d "$title_b64" 2>/dev/null || true)"
     pmark=""; [ "$pactive" = "1" ] && pmark="*"
+    plabel="$(short "$pcwd" 60)"
+    [ -n "$ptitle" ] && [ "$ptitle" != "$pcmd" ] && plabel="$plabel [$ptitle]"
     printf '  %s.%s%s%s%s %s\n' "$TS_ANSI_SAVED" "$pidx" "$TS_RESET" \
-      "$TS_ANSI_MARK" "$pmark" "$(short "$pcwd" 60)"
+      "$TS_ANSI_MARK" "$pmark" "$plabel"
     [ -n "$pcmd" ] && printf '    %s$%s %s\n' "$TS_ANSI_DOLLAR" "$TS_RESET" "$(short "$pcmd" 80)"
   done < <(grep -F "P${US}${NAME}${US}${widx}${US}" "$SAVE_PATH" || true)
 done < <(grep -F "W${US}${NAME}${US}" "$SAVE_PATH" || true)

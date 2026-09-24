@@ -59,6 +59,12 @@ case "${HISTORY_LINES:-}" in ''|*[!0-9]*) HISTORY_LINES=0 ;; esac
 # Captured per pane from /proc/<pid>/environ (no keystrokes injected)
 # plus tmux pane/session/global environments, stored as E records;
 # restore re-exports them before re-running commands.
+#
+# Idle shells export vars invisibly to /proc, so as a last resort the saver
+# may ask the shell itself via a one-line `printenv` probe typed with
+# send-keys (POSIX + fish only). Disable that probing with:
+#   set -g @tsession-save-env-query 'off'
+# (fully non-intrusive, resurrect-style: only /proc + tmux environments).
 DEFAULT_SAVE_ENV="VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV PATH"
 SAVE_ENV_RAW="$(tmux show-option -gqv "@tsession-save-env" 2>/dev/null || true)"
 # '*' / 'all' = auto mode: snapshot ALL exported vars of each pane
@@ -81,7 +87,64 @@ done
 SAVE_ENV_CLEAN="${SAVE_ENV_CLEAN# }"
 unset _n _c
 
+# 'on' (default) = idle shells may be probed once via send-keys for vars
+# invisible in /proc; 'off' = never type into panes (resurrect-style).
+ENV_QUERY="$(tmux show-option -gqv "@tsession-save-env-query" 2>/dev/null || true)"
+case "$ENV_QUERY" in ""|on|ON|1|yes) ENV_QUERY="on" ;; *) ENV_QUERY="off" ;; esac
+
 b64() { printf '%s' "$1" | base64 -w0 2>/dev/null || printf '%s' "$1" | base64 | tr -d '\n'; }
+
+# --- grouped sessions + client state (tmux-resurrect style) ---
+# Space-padded list of grouped (linked) session names, exported for filters.
+GROUPED_SESSIONS=" "
+
+get_active_window_index() {
+  tmux list-windows -t "$1" -F "#{window_flags} #{window_index}" 2>/dev/null \
+    | awk '$1 ~ /\*/ { print $2; }'
+}
+
+get_alternate_window_index() {
+  tmux list-windows -t "$1" -F "#{window_flags} #{window_index}" 2>/dev/null \
+    | awk '$1 ~ /-/ { print $2; }'
+}
+
+is_session_grouped() {
+  case "$GROUPED_SESSIONS" in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# Emit G records for grouped (linked) sessions:
+#   G US grouped US original US :alt_idx US :active_idx
+# (leading ':' mirrors resurrect; empty index = no alternate/active).
+dump_grouped_sessions() {
+  local current_group="" original_session=""
+  local grouped session_group session_id session_name
+  local active_window_index alternate_window_index
+  local TAB="$(printf '\t')"
+  GROUPED_SESSIONS=" "
+  while IFS="$TAB" read -r grouped session_group session_id session_name; do
+    [ -z "${session_name:-}" ] && continue
+    if [ "$session_group" != "$current_group" ]; then
+      original_session="$session_name"
+      current_group="$session_group"
+    else
+      active_window_index="$(get_active_window_index "$session_name")"
+      alternate_window_index="$(get_alternate_window_index "$session_name")"
+      printf 'G%s%s%s%s%s%s%s%s%s\n' "$US" "$session_name" "$US" "$original_session" \
+        "$US" ":$alternate_window_index" "$US" ":$active_window_index"
+      GROUPED_SESSIONS="$GROUPED_SESSIONS$session_name "
+    fi
+  done < <(tmux list-sessions -F "#{session_grouped}${TAB}#{session_group}${TAB}#{session_id}${TAB}#{session_name}" 2>/dev/null \
+    | grep '^1' | cut -c 3- | sort || true)
+}
+
+# Emit the T record with the attached client state:
+#   T US client_session US client_last_session
+dump_state() {
+  local st
+  st="$(tmux display-message -p '#{client_session} #{client_last_session}' 2>/dev/null || true)"
+  [ -n "${st:-}" ] || return 0
+  printf 'T%s%s%s%s\n' "$US" "${st%% *}" "$US" "${st#* }"
+}
 
 # All direct children of a pid, one per line.
 children_of() {
@@ -235,6 +298,7 @@ proc_env_of_subtree() {
 # of history when HISTCONTROL=ignorespace/ignoreboth. Always returns 0.
 # Supports POSIX shells + fish; other shells return 0 with no output.
 query_shell_env() {
+  [ "${ENV_QUERY:-on}" = "on" ] || return 0
   local target="$1" shell="$2" outfile="$3" names="$4" q
   [ -n "$names" ] || return 0
   rm -f "$outfile"
@@ -361,6 +425,7 @@ dump_tmux_envs() {
 # Query the LIST of exported names from an idle shell (auto mode step 1).
 # Prints names (space-separated) on stdout. Always returns 0.
 query_shell_names() {
+  [ "${ENV_QUERY:-on}" = "on" ] || return 0
   local target="$1" shell="$2" outfile="$3" q line name names
   rm -f "$outfile"
   case "$shell" in
@@ -504,26 +569,43 @@ dump_block() {
     local attached
     attached="$(tmux display-message -p -t "=$ONLY" '#{?session_attached,1,0}' 2>/dev/null || echo 0)"
     printf 'S%s%s%s%s\n' "$US" "$ONLY" "$US" "$attached"
-    win_src="$(tmux list-windows -t "=$ONLY" -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}" 2>/dev/null || true)"
-    pane_src="$(tmux list-panes -t "=$ONLY" -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}" 2>/dev/null || true)"
+    win_src="$(tmux list-windows -t "=$ONLY" -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}${US}#{window_flags}" 2>/dev/null || true)"
+    pane_src="$(tmux list-panes -t "=$ONLY" -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
   else
     tmux list-sessions -F "S${US}#{session_name}${US}#{?session_attached,1,0}" 2>/dev/null || true
-    win_src="$(tmux list-windows -a -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}" 2>/dev/null || true)"
-    pane_src="$(tmux list-panes -a -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}" 2>/dev/null || true)"
+    # Grouped sessions own no windows: record the links, remember members
+    # so their (duplicate) windows/panes are skipped below (resurrect-style).
+    dump_grouped_sessions
+    dump_state
+    win_src="$(tmux list-windows -a -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}${US}#{window_flags}" 2>/dev/null || true)"
+    pane_src="$(tmux list-panes -a -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
   fi
 
-  while IFS="$US" read -r _ sess widx wname wactive wlayout; do
+  # W v3: sess, widx, wname_b64, wactive, wlayout, wflags, auto_rename
+  # (wflags raw, e.g. '*-Z'; auto_rename 'on'/'off', ':' = was unset).
+  while IFS="$US" read -r _ sess widx wname_raw wactive wlayout wflags; do
     [ -z "${sess:-}" ] && continue
-    printf 'W%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$(b64 "$wname")" "$US" "$wactive" "$US" "$wlayout"
+    if [ -z "$ONLY" ]; then
+      is_session_grouped "$sess" && continue
+    fi
+    auto_rename="$(tmux show-window-options -v -t "=$sess:$widx" automatic-rename 2>/dev/null || true)"
+    [ -z "${auto_rename:-}" ] && auto_rename=":"
+    printf 'W%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$(b64 "$wname_raw")" "$US" "$wactive" "$US" "$wlayout" "$US" "${wflags:-}" "$US" "$auto_rename"
   done <<< "$win_src"
 
-  while IFS="$US" read -r _ sess widx pidx pactive cwd pid _cur; do
+  # P v3: sess, widx, pidx, pactive, cwd_b64, cmd_b64, title_b64, cur_b64
+  # (cmd = full command via ps walk, cur = pane_current_command short name).
+  while IFS="$US" read -r _ sess widx pidx pactive cwd pid cur title; do
     [ -z "${sess:-}" ] && continue
+    if [ -z "$ONLY" ]; then
+      is_session_grouped "$sess" && continue
+    fi
     cmd="$(full_cmd_of_pane "$pid")"
-    printf 'P%s%s%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$pactive" "$US" "$(b64 "$cwd")" "$US" "$(b64 "$cmd")"
-    dump_pane_env "$sess" "$widx" "$pidx" "$pid"
+    printf 'P%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$pactive" "$US" "$(b64 "$cwd")" "$US" "$(b64 "$cmd")" "$US" "$(b64 "${title:-}")" "$US" "$(b64 "${cur:-}")"
     if [ "$HISTORY_LINES" -gt 0 ]; then
-      hist="$(tmux capture-pane -p -J -S "-$HISTORY_LINES" -t "=$sess:$widx.$pidx" 2>/dev/null || true)"
+      # History FIRST: env probing below types into idle shells, and the
+      # keystrokes would otherwise be captured here as pane history.
+      hist="$(tmux capture-pane -p -e -J -S "-$HISTORY_LINES" -t "=$sess:$widx.$pidx" 2>/dev/null || true)"
       if [ -n "$hist" ]; then
         # Guard against pathological panes (huge scrollback dumps).
         if [ "${#hist}" -gt 102400 ]; then
@@ -532,12 +614,13 @@ dump_block() {
         printf 'H%s%s%s%s%s%s%s%s%s\n' "$US" "$sess" "$US" "$widx" "$US" "$pidx" "$US" "$(b64 "$hist")"
       fi
     fi
+    dump_pane_env "$sess" "$widx" "$pidx" "$pid"
   done <<< "$pane_src"
 }
 
 if [ -z "$ONLY" ]; then
   {
-    echo "# tsession save v2 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "# tsession save v3 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     dump_block
   } > "$TMP"
   [ -f "$SAVE_PATH" ] && cp -f "$SAVE_PATH" "$SAVE_PATH.bak" 2>/dev/null || true
@@ -553,12 +636,13 @@ if [ -z "$ONLY" ]; then
   say "$msg"
 else
   {
-    echo "# tsession save v2 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "# tsession save v3 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [ -f "$SAVE_PATH" ]; then
       awk -v US="$US" -v name="$ONLY" '
         BEGIN { FS = US; OFS = US }
         /^#/ { next }
         /^(S|W|P|H|E)/ && $2 == name { next }
+        /^G/ && ($2 == name || $3 == name) { next }
         { print }
       ' "$SAVE_PATH" || true
     fi
