@@ -36,7 +36,7 @@ fi
 [ -z "$SAVE_PATH" ] && SAVE_PATH="$(get_save_path)"
 
 if [ "$ONLY" = "--current" ]; then
-  ONLY="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  ONLY="$(tmx display-message -p '#S' 2>/dev/null || true)"
   if [ -z "$ONLY" ]; then
     say "no current session (run from inside tmux)"
     exit 1
@@ -119,9 +119,8 @@ dump_grouped_sessions() {
   local current_group="" original_session=""
   local grouped session_group session_id session_name
   local active_window_index alternate_window_index
-  local TAB="$(printf '\t')"
-  GROUPED_SESSIONS=" "
-  while IFS="$TAB" read -r grouped session_group session_id session_name; do
+    GROUPED_SESSIONS=" "
+  while IFS="$US" read -r grouped session_group session_id session_name; do
     [ -z "${session_name:-}" ] && continue
     if [ "$session_group" != "$current_group" ]; then
       original_session="$session_name"
@@ -133,7 +132,7 @@ dump_grouped_sessions() {
         "$US" ":$alternate_window_index" "$US" ":$active_window_index"
       GROUPED_SESSIONS="$GROUPED_SESSIONS$session_name "
     fi
-  done < <(tmux list-sessions -F "#{session_grouped}${TAB}#{session_group}${TAB}#{session_id}${TAB}#{session_name}" 2>/dev/null \
+  done < <(tmx list-sessions -F "#{session_grouped}${US}#{session_group}${US}#{session_id}${US}#{session_name}" 2>/dev/null \
     | grep '^1' | cut -c 3- | sort || true)
 }
 
@@ -141,7 +140,7 @@ dump_grouped_sessions() {
 #   T US client_session US client_last_session
 dump_state() {
   local st
-  st="$(tmux display-message -p '#{client_session} #{client_last_session}' 2>/dev/null || true)"
+  st="$(tmx display-message -p '#{client_session} #{client_last_session}' 2>/dev/null || true)"
   [ -n "${st:-}" ] || return 0
   printf 'T%s%s%s%s\n' "$US" "${st%% *}" "$US" "${st#* }"
 }
@@ -569,16 +568,16 @@ dump_block() {
     local attached
     attached="$(tmux display-message -p -t "=$ONLY" '#{?session_attached,1,0}' 2>/dev/null || echo 0)"
     printf 'S%s%s%s%s\n' "$US" "$ONLY" "$US" "$attached"
-    win_src="$(tmux list-windows -t "=$ONLY" -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}${US}#{window_flags}" 2>/dev/null || true)"
-    pane_src="$(tmux list-panes -t "=$ONLY" -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
+    win_src="$(tmx list-windows -t "=$ONLY" -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}${US}#{window_flags}" 2>/dev/null || true)"
+    pane_src="$(tmx list-panes -t "=$ONLY" -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
   else
-    tmux list-sessions -F "S${US}#{session_name}${US}#{?session_attached,1,0}" 2>/dev/null || true
+    tmx list-sessions -F "S${US}#{session_name}${US}#{?session_attached,1,0}" 2>/dev/null || true
     # Grouped sessions own no windows: record the links, remember members
     # so their (duplicate) windows/panes are skipped below (resurrect-style).
     dump_grouped_sessions
     dump_state
-    win_src="$(tmux list-windows -a -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}${US}#{window_flags}" 2>/dev/null || true)"
-    pane_src="$(tmux list-panes -a -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
+    win_src="$(tmx list-windows -a -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}${US}#{window_flags}" 2>/dev/null || true)"
+    pane_src="$(tmx list-panes -a -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
   fi
 
   # W v3: sess, widx, wname_b64, wactive, wlayout, wflags, auto_rename

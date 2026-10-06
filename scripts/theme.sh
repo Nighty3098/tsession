@@ -22,6 +22,16 @@
 #   sgr_fg <colour> [bold]    foreground SGR escape (bold=1, dim=2)
 #   sgr_bg <colour>           background SGR escape
 
+# tmx: tmux wrapper for machine-readable output with \x1f separators.
+# When stdout is a pipe, tmux (3.x) escapes control characters: \x1f becomes
+# the literal text "\037" (and TAB becomes "_"); in a non-UTF-8 locale every
+# non-ASCII byte (e.g. in cwd paths) becomes "_" too. `-u` keeps UTF-8 intact
+# and sed turns "\037" back into the real separator, so IFS="$US" read works.
+tmx() {
+  local _us=$'\x1f'
+  tmux -u "$@" | sed "s/\\\\037/${_us}/g"
+}
+
 tstyle() {
   local opt="$1" attr="$2" def="$3" val
   val="$(tmux show-option -gqv "$opt" 2>/dev/null || true)"

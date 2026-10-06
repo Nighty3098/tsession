@@ -251,6 +251,7 @@ sorted_panes_of() {
   panes_of "$1" "$2" | sort -t "$US" -k4,4n || true
 }
 
+ENVCACHE="$HOME/.cache/tsession/env"
 TOTAL_CMDS_RUN=0; TOTAL_CMDS_SKIPPED=0; TOTAL_HIST=0; TOTAL_ENV=0
 MISSING_DIRS=0
 
@@ -368,24 +369,39 @@ for s in "${sessions_ordered[@]}"; do
     mapfile -t saved_e < <(env_in_win "$s" "$ewidx" | sort -t "$US" -k4,4n || true)
     [ "${#saved_e[@]}" -eq 0 ] && continue
     mapfile -t live_ep < <(live_panes_of "$s" "$ewidx")
-    cur_epidx=""; pi=-1
+    # saved pane_index -> live pane index, paired by ORDER over ALL saved panes
+    # of the window (panes without env records must still consume a slot).
+    declare -A emap=(); ek=0
+    while IFS= read -r epl || [ -n "${epl:-}" ]; do
+      [ -z "${epl:-}" ] && continue
+      IFS="$US" read -r _ _eps _epw espi _erest <<< "$epl"
+      emap["$espi"]="${live_ep[$ek]:-}"
+      ek=$((ek + 1))
+    done < <(sorted_panes_of "$s" "$ewidx")
     # Batch all exports of one live pane into a single send-keys line:
     # one prompt roundtrip per pane instead of per variable.
-    batch_target=""; batch_cmds=""; batch_n=0
+    # Exports go through a 0600 temp file that is sourced (and removes itself):
+    # tmux send-keys cannot carry lines over ~16KB, which auto mode ('*')
+    # easily exceeds with a full environment.
+    batch_target=""; batch_file=""; batch_n=0
     flush_env_batch() {
-      [ -n "$batch_target" ] && [ -n "$batch_cmds" ] || return 0
-      pane_exists "$batch_target" || { batch_target=""; batch_cmds=""; return 0; }
+      [ -n "$batch_target" ] && [ -n "$batch_file" ] || return 0
+      if ! pane_exists "$batch_target"; then
+        rm -f -- "$batch_file"; batch_target=""; batch_file=""; return 0
+      fi
+      printf 'rm -f -- %s\n' "$(shquote "$batch_file")" >> "$batch_file"
       wait_for_shell "$batch_target" || true
-      tmux send-keys -t "$batch_target" -l "$batch_cmds" 2>/dev/null || { batch_target=""; batch_cmds=""; return 0; }
+      if ! tmux send-keys -t "$batch_target" -l " . $(shquote "$batch_file")" 2>/dev/null; then
+        rm -f -- "$batch_file"; batch_target=""; batch_file=""; return 0
+      fi
       tmux send-keys -t "$batch_target" Enter 2>/dev/null || true
       settle
-      batch_target=""; batch_cmds=""
+      batch_target=""; batch_file=""
     }
     for eline in "${saved_e[@]}"; do
       [ -z "${eline:-}" ] && continue
       IFS="$US" read -r _ _fs _fw epidx ename_b64 eval_b64 <<< "$eline"
-      if [ "$epidx" != "$cur_epidx" ]; then cur_epidx="$epidx"; pi=$((pi + 1)); fi
-      lp="${live_ep[$pi]:-}"
+      lp="${emap[$epidx]:-}"
       [ -z "$lp" ] && continue
       is_b64 "$ename_b64" || continue
       is_b64 "$eval_b64" || continue
@@ -407,8 +423,12 @@ for s in "${sessions_ordered[@]}"; do
         batch_n=0
       fi
       batch_target="$target"
-      if [ -n "$batch_cmds" ]; then batch_cmds="$batch_cmds; "; fi
-      batch_cmds="${batch_cmds}export $ename=\"\$(echo '$eval_b64' | base64 -d 2>/dev/null || echo '$eval_b64' | base64 -D)\""
+      if [ -z "$batch_file" ]; then
+        mkdir -p "$ENVCACHE" 2>/dev/null && chmod 700 "$ENVCACHE" 2>/dev/null || true
+        batch_file="$ENVCACHE/$(printf '%s' "$es" | tr -c 'A-Za-z0-9_-' '_')_${ewidx}_${lp}.sh"
+        ( umask 077; : > "$batch_file" ) 2>/dev/null || { batch_target=""; continue; }
+      fi
+      printf 'export %s=%s\n' "$ename" "$(shquote "$evalue")" >> "$batch_file"
       batch_n=$((batch_n + 1))
     done
     if [ -n "$batch_target" ]; then
@@ -417,7 +437,8 @@ for s in "${sessions_ordered[@]}"; do
       TOTAL_ENV=$((TOTAL_ENV + batch_n))
     fi
     unset -f flush_env_batch
-    unset batch_target batch_cmds batch_n
+    unset emap ek
+    unset batch_target batch_file batch_n
   done < <(wins_of "$s")
 
   # Re-print captured scrollback (approximation: the text is catted into the
