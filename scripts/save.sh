@@ -581,7 +581,7 @@ dump_block() {
 		attached="$(tmux display-message -p -t "=$ONLY" '#{?session_attached,1,0}' 2>/dev/null || echo 0)"
 		printf 'S%s%s%s%s\n' "$US" "$ONLY" "$US" "$attached"
 		win_src="$(tmx list-windows -t "=$ONLY" -F "W${US}#{session_name}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{window_layout}${US}#{window_flags}" 2>/dev/null || true)"
-		pane_src="$(tmx list-panes -t "=$ONLY" -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
+		pane_src="$(tmx list-panes -s -t "=$ONLY" -F "P${US}#{session_name}${US}#{window_index}${US}#{pane_index}${US}#{pane_active}${US}#{pane_current_path}${US}#{pane_pid}${US}#{pane_current_command}${US}#{pane_title}" 2>/dev/null || true)"
 	else
 		tmx list-sessions -F "S${US}#{session_name}${US}#{?session_attached,1,0}" 2>/dev/null || true
 		# Grouped sessions own no windows: record the links, remember members
